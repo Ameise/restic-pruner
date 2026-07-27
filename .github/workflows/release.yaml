@@ -30,7 +30,7 @@ jobs:
           - arch: amd64
             platform: linux/amd64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read the add-on version
         id: version
