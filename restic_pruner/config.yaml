@@ -1,0 +1,110 @@
+---
+name: Restic Pruner
+version: "0.1.0"
+slug: restic_pruner
+description: >-
+  Scheduled restic forget/prune and repository checks, reported to
+  healthchecks.io and surfaced in Home Assistant.
+url: https://github.com/Ameise/restic-pruner
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:broom
+panel_title: Restic Pruner
+hassio_api: true
+homeassistant_api: true
+services:
+  - mqtt:want
+map:
+  - addon_config:rw
+watchdog: "http://[HOST]:8099/api/health"
+backup: hot
+backup_exclude:
+  - cache
+options:
+  repository: ""
+  password: ""
+  environment: []
+  retention:
+    keep_hourly: 48
+    keep_daily: 14
+    keep_weekly: 8
+    keep_monthly: 6
+  prune:
+    enabled: true
+    schedule: "0 3 * * 0"
+    healthchecks_url: ""
+    dry_run: false
+    max_unused: unlimited
+  check:
+    enabled: true
+    schedule: "0 5 * * 3"
+    healthchecks_url: ""
+    read_data_subset: 5%
+  log_level: info
+schema:
+  # Single repository: fill these in and leave "repositories" empty.
+  repository: str?
+  name: str?
+  password: password?
+  password_file: str?
+  environment:
+    - name: str
+      value: password
+  # Several repositories: fill this list instead. They are maintained one after
+  # another on the shared schedule below. Per-repository backend credentials go
+  # in "environment" as KEY=value lines, and any keep_* value overrides the
+  # shared retention policy for that repository only.
+  repositories:
+    - name: str
+      repository: str
+      password: password?
+      password_file: str?
+      environment: str?
+      prune_healthchecks_url: str?
+      check_healthchecks_url: str?
+      keep_last: int(0,)?
+      keep_hourly: int(0,)?
+      keep_daily: int(0,)?
+      keep_weekly: int(0,)?
+      keep_monthly: int(0,)?
+      keep_yearly: int(0,)?
+      keep_within: str?
+  retention:
+    keep_last: int(0,)?
+    keep_hourly: int(0,)?
+    keep_daily: int(0,)?
+    keep_weekly: int(0,)?
+    keep_monthly: int(0,)?
+    keep_yearly: int(0,)?
+    keep_within: str?
+    group_by: str?
+  prune:
+    enabled: bool
+    schedule: str
+    healthchecks_url: str?
+    dry_run: bool?
+    max_unused: str?
+    max_repack_size: str?
+  check:
+    enabled: bool
+    schedule: str
+    healthchecks_url: str?
+    read_data_subset: str?
+    with_cache: bool?
+  retry_lock: str?
+  healthchecks_base_url: str?
+  history_limit: int(1,500)?
+  mqtt:
+    enabled: bool?
+    host: str?
+    port: port?
+    username: str?
+    password: password?
+    discovery_prefix: str?
+  log_level: list(trace|debug|info|warning|error)

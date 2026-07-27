@@ -1,0 +1,83 @@
+---
+configuration:
+  repository:
+    name: Repository
+    description: >-
+      The restic repository to maintain, exactly as you would pass it to
+      restic -r. For example b2:my-bucket:backups, s3:s3.amazonaws.com/my-bucket,
+      sftp:user@host:/path/to/repo or /share/backups for a local path. Leave
+      this empty if you use the repositories list instead.
+  name:
+    name: Repository name
+    description: >-
+      Label for this repository, used in entity names and in the log. Defaults
+      to "main".
+  repositories:
+    name: Repositories
+    description: >-
+      Maintain several repositories from one add-on. They are pruned and
+      checked one after another on the shared schedule below, each with its own
+      run history, entities and healthchecks.io check. Put backend credentials
+      in this entry's environment field as KEY=value lines, one per line. Any
+      keep_ value set here overrides the shared retention policy for this
+      repository only. Leave this list empty to use the single repository
+      fields above.
+  password:
+    name: Repository password
+    description: >-
+      The password that unlocks the repository. Leave empty if you use a
+      password file instead.
+  password_file:
+    name: Password file
+    description: >-
+      Path to a file containing the repository password. Put the file in
+      /addon_configs/<slug>/ on the host and reference it here as
+      /config/<filename>.
+  environment:
+    name: Backend credentials
+    description: >-
+      Extra environment variables passed to restic, used for backend
+      credentials such as B2_ACCOUNT_ID, B2_ACCOUNT_KEY, AWS_ACCESS_KEY_ID or
+      AWS_SECRET_ACCESS_KEY.
+  retention:
+    name: Retention policy
+    description: >-
+      How many snapshots to keep. This add-on applies the policy, so no other
+      schedule should run restic forget against the same repository.
+      Snapshots are grouped by host and path, as restic does by default.
+  prune:
+    name: Prune job
+    description: >-
+      Runs restic forget --prune on a cron schedule, for every repository in
+      turn. Leave max_unused at "unlimited" to delete only fully unused pack
+      files, which keeps network transfer close to zero. The healthchecks URL
+      here is the fallback for repositories that do not set their own.
+  check:
+    name: Check job
+    description: >-
+      Runs restic check to verify repository integrity. read_data_subset also
+      re-reads a random share of the actual pack data, for example 5%. Leave it
+      empty to verify structure only.
+  retry_lock:
+    name: Lock retry window
+    description: >-
+      How long restic waits for a repository lock held by another process, for
+      example 15m. Prune takes an exclusive lock, so anything else using the
+      same repository needs --retry-lock too.
+  healthchecks_base_url:
+    name: healthchecks base URL
+    description: >-
+      Only needed when you enter bare check UUIDs instead of full ping URLs.
+      Point this at your own instance if you self-host healthchecks.
+  history_limit:
+    name: History limit
+    description: How many past runs and run logs to keep.
+  mqtt:
+    name: MQTT
+    description: >-
+      Leave empty to use the broker Home Assistant already knows about. Only
+      fill this in to reach a broker the Supervisor cannot tell us about.
+  log_level:
+    name: Log level
+    description: Verbosity of the add-on log.
+network: {}

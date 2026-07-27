@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "restic-pruner"
+version = "0.1.0"
+description = "Scheduled restic forget/prune/check with healthchecks.io reporting and Home Assistant integration"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [{ name = "Florentin Tribukait" }]
+keywords = ["restic", "backup", "prune", "home-assistant", "healthchecks"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: System Administrators",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Archiving :: Backup",
+]
+dependencies = [
+  "aiohttp>=3.10",
+  "aiomqtt>=2.3",
+  "croniter>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+  "types-croniter",
+]
+
+[project.scripts]
+restic-pruner = "restic_pruner.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/Ameise/restic-pruner"
+Issues = "https://github.com/Ameise/restic-pruner/issues"
+
+[tool.setuptools.packages.find]
+where = ["restic_pruner/src"]
+
+[tool.setuptools.package-data]
+restic_pruner = ["web/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["restic_pruner/src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "BLE", "C4", "SIM", "RUF", "ASYNC", "PTH", "T20"]
+ignore = ["RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["T20"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["restic_pruner/src", "tests", "scripts"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["croniter.*", "aiomqtt.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]

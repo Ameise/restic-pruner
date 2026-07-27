@@ -1,0 +1,16 @@
+#!/command/with-contenv bashio
+# ==============================================================================
+# Take the container down when the service stops.
+#
+# A misconfigured repository or an invalid schedule should surface as a stopped
+# add-on in the Home Assistant UI rather than an idle container.
+# ==============================================================================
+declare exit_code_service="${1}"
+
+if [[ "${exit_code_service}" -eq 0 ]]; then
+  bashio::log.info "Restic Pruner stopped cleanly."
+else
+  bashio::log.warning "Restic Pruner exited with code ${exit_code_service}."
+fi
+
+exec /run/s6/basedir/bin/halt

@@ -1,0 +1,11 @@
+#!/command/with-contenv bashio
+# ==============================================================================
+# Start the Restic Pruner service.
+#
+# The Python process owns scheduling, the web UI and the MQTT connection, so s6
+# only has to keep one long-running program alive.
+# ==============================================================================
+
+bashio::log.info "Starting Restic Pruner..."
+
+exec python3 -m restic_pruner

@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Restic Pruner</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1b1f24;
+    --muted: #6b7280;
+    --accent: #03a9f4;
+    --ok: #2e7d32;
+    --fail: #c62828;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418;
+      --card: #1b1f24;
+      --border: #2c3138;
+      --text: #e6e8eb;
+      --muted: #9aa3ad;
+      --ok: #66bb6a;
+      --fail: #ef5350;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 13px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  h3 { font-size: 16px; margin: 0; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .card-head .spacer { flex: 1; }
+  .target { font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 14px; }
+  .row > span:first-child { color: var(--muted); }
+  .row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+  .split h4 { margin: 10px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .pill {
+    display: inline-flex; align-items: center;
+    padding: 2px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
+    border: 1px solid currentColor;
+  }
+  .pill.success { color: var(--ok); }
+  .pill.failed { color: var(--fail); }
+  .pill.running { color: var(--accent); }
+  .pill.skipped, .pill.never { color: var(--muted); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  button {
+    font: inherit; font-size: 14px;
+    padding: 7px 13px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
+  button.danger:hover:not(:disabled) { border-color: var(--fail); color: var(--fail); }
+  button.small { font-size: 13px; padding: 5px 10px; }
+  pre.log {
+    margin: 0; padding: 12px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
+    max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .04em; padding-bottom: 8px; }
+  td { padding: 7px 8px 7px 0; border-top: 1px solid var(--border); }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .full { grid-column: 1 / -1; }
+  .muted { color: var(--muted); }
+  .toast {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 16px; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+    opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90vw;
+  }
+  .toast.show { opacity: 1; }
+  .toast.error { border-color: var(--fail); color: var(--fail); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Restic Pruner</h1>
+  <span id="global-status" class="pill never">loading</span>
+  <span class="spacer" style="flex:1"></span>
+  <span class="target" id="timezone"></span>
+</header>
+
+<div class="grid">
+  <section class="card full" id="card-schedule">
+    <h2>Schedule</h2>
+    <div class="split">
+      <div>
+        <div class="row"><span>Prune</span><span id="prune-schedule" class="target"></span></div>
+        <div class="row"><span>Next prune</span><span id="prune-next">–</span></div>
+      </div>
+      <div>
+        <div class="row"><span>Check</span><span id="check-schedule" class="target"></span></div>
+        <div class="row"><span>Next check</span><span id="check-next">–</span></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" data-run="prune">Prune all now</button>
+      <button data-run="prune" data-dry="1">Dry run all</button>
+      <button data-run="check">Check all now</button>
+    </div>
+  </section>
+
+  <div class="full grid" id="repositories"></div>
+
+  <section class="card full" id="card-log">
+    <h2><span id="log-title">Log</span></h2>
+    <pre class="log" id="log">No run selected.</pre>
+  </section>
+
+  <section class="card full">
+    <h2>History</h2>
+    <table>
+      <thead><tr><th>Job</th><th>Repository</th><th>Status</th><th>Started</th><th>Duration</th><th>Trigger</th><th>Detail</th></tr></thead>
+      <tbody id="history"><tr><td colspan="7" class="muted">No runs yet.</td></tr></tbody>
+    </table>
+  </section>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const BASE = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
+const api = (path) => BASE + 'api/' + path;
+const $ = (id) => document.getElementById(id);
+
+let logOffset = 0;
+let followingRunId = null;
+let pinnedRunId = null;
+let repositoriesSignature = null;
+let historySignature = null;
+// The poll interval and the post-click refresh can otherwise overlap, and two
+// concurrent log pumps interleave their appends.
+let refreshing = false;
+
+function toast(message, isError) {
+  const el = $('toast');
+  el.textContent = message;
+  el.classList.toggle('error', !!isError);
+  el.classList.add('show');
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+function bytes(value) {
+  if (value === null || value === undefined) return '–';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let n = Number(value), i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
+}
+
+function relative(iso) {
+  const date = new Date(iso);
+  const diff = (date - Date.now()) / 1000;
+  const abs = Math.abs(diff);
+  const rel = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  if (abs < 90) return rel.format(Math.round(diff), 'second');
+  if (abs < 3600) return rel.format(Math.round(diff / 60), 'minute');
+  if (abs < 86400) return rel.format(Math.round(diff / 3600), 'hour');
+  return rel.format(Math.round(diff / 86400), 'day');
+}
+
+// Rendered once with the timestamp attached, then refreshed in place by
+// paintRelativeTimes. Re-rendering the markup on every tick would destroy the
+// buttons inside these cards, and a click landing mid-rebuild would be lost.
+function when(iso) {
+  if (!iso) return '–';
+  return `<span class="rel" data-time="${iso}" title="${new Date(iso).toLocaleString()}">`
+    + `${relative(iso)}</span>`;
+}
+
+function paintRelativeTimes() {
+  document.querySelectorAll('.rel[data-time]').forEach((el) => {
+    el.textContent = relative(el.dataset.time);
+  });
+}
+
+function duration(seconds) {
+  if (seconds === null || seconds === undefined) return '–';
+  if (seconds < 60) return seconds.toFixed(1) + 's';
+  const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
+  if (m < 60) return `${m}m ${s}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+const pill = (status) => `<span class="pill ${status}">${status}</span>`;
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function request(path, options) {
+  const response = await fetch(api(path), options);
+  if (!response.ok) {
+    let reason = response.statusText;
+    try { reason = (await response.text()) || reason; } catch (_) {}
+    throw new Error(reason);
+  }
+  const type = response.headers.get('content-type') || '';
+  return type.includes('json') ? response.json() : response.text();
+}
+
+function retentionSummary(retention) {
+  const parts = Object.entries(retention)
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key.replace('keep_', '')}:${value}`);
+  return parts.join(' ') || 'none';
+}
+
+function repositoryCard(repository, running) {
+  const prune = repository.jobs.prune;
+  const check = repository.jobs.check;
+  const metrics = (prune.last_run && prune.last_run.metrics) || {};
+  const disabled = running ? 'disabled' : '';
+  return `<section class="card" data-repository="${escapeHtml(repository.slug)}">
+    <div class="card-head">
+      <h3>${escapeHtml(repository.name)}</h3>
+      <span class="spacer"></span>
+      ${pill(prune.last_status)}
+    </div>
+    <div class="target" style="margin-bottom:10px">${escapeHtml(repository.target)}</div>
+    <div class="row"><span>Size</span><span>${bytes(repository.size_bytes)}</span></div>
+    <div class="row"><span>Snapshots</span><span>${repository.snapshot_count || '–'}</span></div>
+    <div class="row"><span>Retention</span><span class="target">${retentionSummary(repository.retention)}</span></div>
+    <div class="split">
+      <div>
+        <h4>Prune</h4>
+        <div class="row"><span>Last</span><span>${prune.last_run ? when(prune.last_run.finished_at || prune.last_run.started_at) : '–'}</span></div>
+        <div class="row"><span>Removed</span><span>${metrics.snapshots_removed ?? '–'}</span></div>
+        <div class="row"><span>Freed</span><span>${bytes(metrics.bytes_reclaimed)}</span></div>
+      </div>
+      <div>
+        <h4>Check ${pill(check.last_status)}</h4>
+        <div class="row"><span>Last</span><span>${check.last_run ? when(check.last_run.finished_at || check.last_run.started_at) : '–'}</span></div>
+        <div class="row"><span>Verified</span><span>${(check.last_run && check.last_run.metrics && check.last_run.metrics.read_data_subset) || '–'}</span></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary small" data-run="prune" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Prune</button>
+      <button class="small" data-run="prune" data-dry="1" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Dry run</button>
+      <button class="small" data-run="check" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Check</button>
+      <button class="small danger" data-unlock="${escapeHtml(repository.slug)}" ${disabled}>Unlock</button>
+    </div>
+  </section>`;
+}
+
+async function refreshStatus() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    await refreshStatusOnce();
+  } finally {
+    refreshing = false;
+  }
+}
+
+async function refreshStatusOnce() {
+  let status;
+  try {
+    status = await request('status');
+  } catch (error) {
+    $('global-status').className = 'pill failed';
+    $('global-status').textContent = 'unreachable';
+    return;
+  }
+
+  const running = status.running;
+  $('global-status').className = 'pill ' + (running ? 'running' : 'success');
+  $('global-status').textContent = running
+    ? `running ${status.current_run.job} on ${status.current_run.repository}`
+    : 'idle';
+  $('timezone').textContent = status.timezone;
+
+  $('prune-schedule').textContent = status.jobs.prune.enabled ? status.jobs.prune.schedule : 'disabled';
+  $('check-schedule').textContent = status.jobs.check.enabled ? status.jobs.check.schedule : 'disabled';
+  $('prune-next').innerHTML = status.jobs.prune.enabled ? when(status.jobs.prune.next_run) : '<span class="muted">disabled</span>';
+  $('check-next').innerHTML = status.jobs.check.enabled ? when(status.jobs.check.next_run) : '<span class="muted">disabled</span>';
+
+  // Only rebuild the cards when their content actually changed; see when().
+  const signature = JSON.stringify([status.repositories, running]);
+  if (signature !== repositoriesSignature) {
+    repositoriesSignature = signature;
+    $('repositories').innerHTML = status.repositories
+      .map((repository) => repositoryCard(repository, running))
+      .join('');
+  }
+
+  document.querySelectorAll('#card-schedule [data-run]').forEach((button) => {
+    const job = button.dataset.run;
+    button.disabled = running || !status.jobs[job].enabled;
+  });
+  paintRelativeTimes();
+
+  if (running) {
+    if (followingRunId !== status.current_run.id) {
+      followingRunId = status.current_run.id;
+      pinnedRunId = null;
+      logOffset = 0;
+      $('log').textContent = '';
+      $('log-title').textContent =
+        `Live log – ${status.current_run.job} on ${status.current_run.repository}`;
+    }
+    await pumpLiveLog();
+  } else if (followingRunId) {
+    followingRunId = null;
+    await pumpLiveLog();
+  }
+  await refreshHistory();
+}
+
+async function pumpLiveLog() {
+  if (pinnedRunId) return;
+  try {
+    const data = await request('live?offset=' + logOffset);
+    if (data.lines.length) {
+      const el = $('log');
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      el.textContent += (el.textContent ? '\n' : '') + data.lines.join('\n');
+      if (atBottom) el.scrollTop = el.scrollHeight;
+    }
+    logOffset = data.offset;
+  } catch (error) { /* transient; the next tick retries */ }
+}
+
+async function refreshHistory() {
+  let data;
+  try { data = await request('runs?limit=25'); } catch (error) { return; }
+  const signature = JSON.stringify(data.runs);
+  if (signature === historySignature) return;
+  historySignature = signature;
+
+  const body = $('history');
+  if (!data.runs.length) {
+    body.innerHTML = '<tr><td colspan="7" class="muted">No runs yet.</td></tr>';
+    return;
+  }
+  body.innerHTML = data.runs.map((run) => {
+    const detail = run.error
+      ? `<span class="muted">${escapeHtml(run.error.split('\n')[0]).slice(0, 80)}</span>`
+      : run.job === 'prune' && run.metrics.bytes_reclaimed !== undefined
+        ? `${run.metrics.snapshots_removed} removed · ${bytes(run.metrics.bytes_reclaimed)} freed`
+        : '';
+    return `<tr data-run-id="${run.id}">
+      <td>${run.job}${run.dry_run ? ' <span class="muted">(dry)</span>' : ''}</td>
+      <td>${escapeHtml(run.repository)}</td>
+      <td>${pill(run.status)}</td>
+      <td>${when(run.started_at)}</td>
+      <td>${duration(run.duration_seconds)}</td>
+      <td class="muted">${run.trigger}</td>
+      <td>${detail}</td>
+    </tr>`;
+  }).join('');
+  paintRelativeTimes();
+}
+
+document.addEventListener('click', async (event) => {
+  const runButton = event.target.closest('[data-run]');
+  if (runButton) {
+    const job = runButton.dataset.run;
+    const dry = runButton.dataset.dry === '1';
+    const repository = runButton.dataset.repository || null;
+    runButton.disabled = true;
+    try {
+      await request(`jobs/${job}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: dry, repository }),
+      });
+      toast(`${job}${dry ? ' (dry run)' : ''} started${repository ? ' on ' + repository : ''}`);
+      pinnedRunId = null;
+      setTimeout(refreshStatus, 400);
+    } catch (error) {
+      toast(error.message, true);
+      runButton.disabled = false;
+    }
+    return;
+  }
+
+  const unlockButton = event.target.closest('[data-unlock]');
+  if (unlockButton) {
+    const repository = unlockButton.dataset.unlock;
+    if (!confirm(`Remove stale restic locks on "${repository}"?\n\nOnly do this when you are sure no other restic process is running against it.`)) return;
+    try {
+      await request('unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repository, remove_all: false }),
+      });
+      toast('Stale locks removed');
+    } catch (error) {
+      toast(error.message, true);
+    }
+    return;
+  }
+
+  const row = event.target.closest('tr[data-run-id]');
+  if (row) {
+    const runId = row.dataset.runId;
+    pinnedRunId = runId;
+    $('log-title').textContent = 'Log – ' + runId.slice(0, 8);
+    try {
+      $('log').textContent = await request(`runs/${runId}/log`);
+      $('log').scrollTop = 0;
+    } catch (error) {
+      $('log').textContent = 'No log stored for this run.';
+    }
+  }
+});
+
+refreshStatus();
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>
