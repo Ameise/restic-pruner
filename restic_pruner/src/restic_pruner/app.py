@@ -161,8 +161,10 @@ class Application:
 
     async def _handle_command(self, command: str, repository: str | None) -> None:
         assert self._runner is not None
-        job: JobName = "check" if command == "check" else "prune"
-        dry_run = command == "prune_dry"
+        # Button payloads are "<job>" or "<job>_dry", optionally ":<repository>".
+        name, _, suffix = command.partition("_")
+        job: JobName = next((j for j in JOB_NAMES if j == name), "prune")
+        dry_run = suffix == "dry"
         try:
             await self._runner.trigger(
                 job, trigger=Trigger.MANUAL, dry_run=dry_run, repository=repository

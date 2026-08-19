@@ -16,6 +16,7 @@ import pytest
 from restic_pruner.config import (
     CheckConfig,
     ConfigError,
+    RepackConfig,
     Settings,
     parse_subset_slice,
     validate_read_data_subset,
@@ -187,3 +188,50 @@ def test_the_namespace_wrapper_passes_the_hostname_as_an_argument() -> None:
     assert wrapped[-4:] == ["restic", "check", "--read-data-subset", "4/13"]
     script = wrapped[wrapped.index("-c") + 1]
     assert "restic-pruner-check" not in script, "never interpolated into the script"
+
+
+# -- unused space ------------------------------------------------------------
+
+#: What `forget --prune` and `prune` both print at the end.
+PRUNE_OUTPUT = """\
+keep 122 snapshots:
+remove 285 snapshots:
+2 snapshots have been removed, running prune
+to repack:          1743 blobs / 16.960 MiB
+this removes:        740 blobs / 7.537 MiB
+to delete:          1535 blobs / 25.810 MiB
+total prune:        2275 blobs / 33.347 MiB
+remaining:          1810 blobs / 144.292 MiB
+unused size after prune: 43.340 MiB (30.04% of remaining size)
+removing 571 old packs
+""".splitlines()
+
+
+def test_unused_space_is_parsed() -> None:
+    result = ForgetPruneResult.from_output(PRUNE_OUTPUT)
+    assert result.unused_bytes == parse_size("43.340 MiB")
+    assert result.unused_percent == pytest.approx(30.04)
+
+
+def test_unreported_unused_space_is_not_the_same_as_none() -> None:
+    """A prune that skipped its work reports nothing; zero is a real measurement."""
+    silent = ForgetPruneResult.from_output(["keep 3 snapshots:", "no snapshots were removed"])
+    assert silent.unused_bytes is None
+
+    clean = ForgetPruneResult.from_output(
+        ["unused size after prune: 0 B (0.00% of remaining size)"]
+    )
+    assert clean.unused_bytes == 0
+    assert clean.unused_percent == 0.0
+
+
+def test_repack_requires_a_real_max_unused(settings: Settings) -> None:
+    """`unlimited` would repack nothing, which is what prune already does."""
+    for value in ("unlimited", "UNLIMITED", ""):
+        broken = dataclasses.replace(settings, repack=RepackConfig(enabled=True, max_unused=value))
+        with pytest.raises(ConfigError, match=r"repack\.max_unused"):
+            broken.validate()
+
+
+def test_a_disabled_repack_is_not_validated(settings: Settings) -> None:
+    dataclasses.replace(settings, repack=RepackConfig(enabled=False, max_unused="")).validate()

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.0
+
+### A `repack` job, to reclaim the space prune cannot
+
+restic can only delete a pack file as a whole, so `forget --prune` deletes the packs
+whose blobs are all dead and has to leave the rest alone. What stays behind is dead
+data inside packs that still hold live blobs -- on a repository backed up every 15
+minutes that can reach 30% of its size, and nothing short of rewriting those packs
+gets it back.
+
+The new job runs `restic prune` on its own with a `max_unused` target. It never
+touches snapshots, so it cannot conflict with the retention policy. It is a superset
+of the prune job -- repacking is not a separate restic operation, it is prune with a
+tighter target -- so give it a rarer schedule rather than the same one.
+
+**Off by default**, because it holds the repository lock for longer than any other
+job. Defaults to `17 4 1 * *` (04:17 on the 1st) and `max_unused: 5%` when enabled;
+`unlimited` is refused, since it would repack nothing. `max_repack_size` bounds one
+run so a large repository converges over several instead of one very long lock.
+
+It has its own `repack_healthchecks_url`, per repository or job-wide, its own run
+history, its own entities and its own button in the web UI. The existing
+`prune_healthchecks_url` is untouched, and `prune` itself is unchanged.
+
+### Unused space is now a number you can watch
+
+restic prints `unused size after prune` on every prune, and until now it went only to
+the run log. It is now parsed and reported as a metric, a line in the healthchecks.io
+ping body, and an **Unused space** sensor per repository -- taken from whichever of
+prune or repack ran most recently. It is the number that tells you whether the repack
+job is worth enabling at all; on a small repository the answer is usually no.
+
 ## 0.2.0
 
 ### The repository lock now says which job is holding it

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import re
@@ -49,6 +50,11 @@ _PRUNE_SUMMARY_RE: Final = re.compile(
     r"(?P<blobs>\d+) blobs / (?P<size>.+?)\s*$"
 )
 _PRUNE_PACKS_RE: Final = re.compile(r"^removing (?P<packs>\d+) old packs\s*$")
+#: What is left behind: dead blobs in packs that still hold live ones, which only
+#: repacking can reclaim. Printed by both ``forget --prune`` and ``prune``.
+_PRUNE_UNUSED_RE: Final = re.compile(
+    r"^unused size after prune:\s+(?P<size>.+?)\s+\((?P<percent>[\d.]+)% of remaining size\)"
+)
 #: One pair per snapshot group, so the counts are summed rather than taken once.
 _KEEP_RE: Final = re.compile(r"^keep (?P<count>\d+) snapshots?:")
 _REMOVE_RE: Final = re.compile(r"^remove (?P<count>\d+) snapshots?:")
@@ -204,6 +210,11 @@ class ForgetPruneResult:
     #: which is what makes a second ``stats`` call over the network avoidable.
     bytes_removed: int = 0
     bytes_remaining: int = 0
+    #: Dead data left in packs that still hold live blobs. Only repacking gets it
+    #: back, so under ``--max-unused unlimited`` this is what accumulates.
+    #: ``None`` means restic did not report it; zero means it reported none.
+    unused_bytes: int | None = None
+    unused_percent: float | None = None
 
     @classmethod
     def from_output(cls, lines: Iterable[str]) -> ForgetPruneResult:
@@ -213,6 +224,8 @@ class ForgetPruneResult:
         packs_removed = 0
         removed = kept = 0
         pruned = False
+        unused_bytes: int | None = None
+        unused_percent: float | None = None
         for line in lines:
             stripped = line.strip()
             if match := _PRUNE_SUMMARY_RE.match(stripped):
@@ -222,6 +235,9 @@ class ForgetPruneResult:
                 sizes[label] = parse_size(match["size"])
             elif match := _PRUNE_PACKS_RE.match(stripped):
                 packs_removed = int(match["packs"])
+            elif match := _PRUNE_UNUSED_RE.match(stripped):
+                unused_bytes = parse_size(match["size"])
+                unused_percent = float(match["percent"])
             elif match := _KEEP_RE.match(stripped):
                 # Summed: restic prints one pair of these per snapshot group.
                 kept += int(match["count"])
@@ -239,6 +255,8 @@ class ForgetPruneResult:
             summary=summary,
             bytes_removed=sizes.get("total prune", 0),
             bytes_remaining=sizes.get("remaining", 0),
+            unused_bytes=unused_bytes,
+            unused_percent=unused_percent,
         )
 
 
@@ -559,6 +577,38 @@ class Restic:
         if dry_run:
             args.append("--dry-run")
 
+        result = await self._run_prune_shaped(args)
+        verb = "would remove" if dry_run else "removed"
+        self._log(f"forget: {verb} {result.removed} snapshot(s), kept {result.kept}")
+        if not result.pruned:
+            self._log("prune: no snapshots were removed, so restic skipped it")
+        return result
+
+    async def prune(self, *, dry_run: bool = False) -> ForgetPruneResult:
+        """Run ``restic prune`` on its own, to reclaim dead space inside packs.
+
+        This is the repack job. It never touches snapshots, so it cannot disagree
+        with the retention policy -- it only rewrites packs whose dead blobs
+        ``forget --prune`` left behind because the pack still held live ones.
+
+        A superset of what the prune job does: the same index load and dead-pack
+        deletion happen first, and only then the repacking.
+        """
+        config = self._settings.repack
+        args = ["prune", "--max-unused", config.max_unused]
+        if config.max_repack_size:
+            args += ["--max-repack-size", config.max_repack_size]
+        if dry_run:
+            args.append("--dry-run")
+
+        result = await self._run_prune_shaped(args)
+        # There is no forget phase to skip, so the prune always happened. The
+        # flag is inferred from restic's "running prune" line, which only
+        # ``forget --prune`` prints.
+        return dataclasses.replace(result, pruned=True)
+
+    async def _run_prune_shaped(self, args: Sequence[str]) -> ForgetPruneResult:
+        """Run a command that prints restic's prune summary, and parse it."""
         captured: list[str] = []
         sink = self._log
 
@@ -567,13 +617,7 @@ class Restic:
             sink(line)
 
         await self.with_log(tee).run(args)
-        result = ForgetPruneResult.from_output(captured)
-
-        verb = "would remove" if dry_run else "removed"
-        self._log(f"forget: {verb} {result.removed} snapshot(s), kept {result.kept}")
-        if not result.pruned:
-            self._log("prune: no snapshots were removed, so restic skipped it")
-        return result
+        return ForgetPruneResult.from_output(captured)
 
     async def check(self, subset: str | None = None) -> CheckResult:
         """Run ``restic check`` and report what it found.

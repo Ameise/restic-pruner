@@ -29,9 +29,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
 
-JobName = Literal["prune", "check"]
+JobName = Literal["prune", "check", "repack"]
 
-JOB_NAMES: Final[tuple[JobName, ...]] = ("prune", "check")
+JOB_NAMES: Final[tuple[JobName, ...]] = ("prune", "check", "repack")
 
 #: Where the Supervisor drops the rendered add-on options.
 SUPERVISOR_OPTIONS_PATH: Final = Path("/data/options.json")
@@ -56,6 +56,8 @@ BODY_MODES: Final = ("summary", "log", "none")
 #: at ``:05`` and finishes inside five minutes never collides with ``:15``.
 DEFAULT_PRUNE_SCHEDULE: Final = "5 3 * * 0"
 DEFAULT_CHECK_SCHEDULE: Final = "5 5 * * 3"
+#: Monthly, and a few minutes after a quarter-hour rather than before one.
+DEFAULT_REPACK_SCHEDULE: Final = "17 4 1 * *"
 
 #: The n-th of four equal parts: four weekly runs verify all of the pack data.
 DEFAULT_READ_DATA_SUBSET: Final = "1/4"
@@ -132,6 +134,7 @@ class RepositoryConfig:
     retention: Retention = field(default_factory=Retention)
     prune_healthchecks_url: str = ""
     check_healthchecks_url: str = ""
+    repack_healthchecks_url: str = ""
 
     @property
     def slug(self) -> str:
@@ -139,7 +142,11 @@ class RepositoryConfig:
         return _SLUG_RE.sub("_", self.name.strip().lower()).strip("_") or "repository"
 
     def healthchecks_url(self, job: JobName) -> str:
-        return self.prune_healthchecks_url if job == "prune" else self.check_healthchecks_url
+        return {
+            "prune": self.prune_healthchecks_url,
+            "check": self.check_healthchecks_url,
+            "repack": self.repack_healthchecks_url,
+        }[job]
 
     def restic_env(self, data_dir: Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
         """Build the environment restic is invoked with for this repository.
@@ -216,6 +223,31 @@ class CheckConfig:
     #: part is eventually verified. A fixed sample re-reads the same data forever.
     rotate_subset: bool = True
     with_cache: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RepackConfig:
+    """The ``prune`` job, run on its own to reclaim dead space inside packs.
+
+    ``forget --prune`` deletes packs whose blobs are all dead, but a pack that
+    still holds one live blob cannot be deleted, and its dead neighbours stay.
+    Reclaiming those means downloading the pack and writing it out again, which
+    is why it is a separate job on a rarer schedule rather than part of prune.
+
+    Nothing here touches snapshots, so this job cannot disagree with the
+    retention policy.
+    """
+
+    enabled: bool = False
+    schedule: str = DEFAULT_REPACK_SCHEDULE
+    healthchecks_url: str = ""
+    #: The point of the job: how much dead space to tolerate. ``unlimited`` would
+    #: repack nothing, which is what the prune job already does, so it is refused.
+    max_unused: str = "5%"
+    #: Bounds one run's transfer, so a large repository converges over several
+    #: runs instead of one very long lock.
+    max_repack_size: str = ""
+    dry_run: bool = False
 
 
 #: ``n/t`` -- the n-th of t equal parts of the pack data.
@@ -295,6 +327,7 @@ class Settings:
     repositories: tuple[RepositoryConfig, ...]
     prune: PruneConfig = field(default_factory=PruneConfig)
     check: CheckConfig = field(default_factory=CheckConfig)
+    repack: RepackConfig = field(default_factory=RepackConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     web: WebConfig = field(default_factory=WebConfig)
     #: How long restic waits for a lock held by a concurrent backup.
@@ -322,8 +355,13 @@ class Settings:
     def under_supervisor(self) -> bool:
         return bool(self.supervisor_token)
 
-    def job(self, name: JobName) -> PruneConfig | CheckConfig:
-        return self.prune if name == "prune" else self.check
+    def job(self, name: JobName) -> PruneConfig | CheckConfig | RepackConfig:
+        jobs: dict[JobName, PruneConfig | CheckConfig | RepackConfig] = {
+            "prune": self.prune,
+            "check": self.check,
+            "repack": self.repack,
+        }
+        return jobs[name]
 
     def repository(self, slug: str) -> RepositoryConfig | None:
         return next((repo for repo in self.repositories if repo.slug == slug), None)
@@ -364,6 +402,12 @@ class Settings:
         if self.history_limit < 1:
             raise ConfigError("history_limit must be at least 1")
         validate_read_data_subset(self.check.read_data_subset)
+        if self.repack.enabled and self.repack.max_unused.strip().lower() in ("", "unlimited"):
+            raise ConfigError(
+                "repack.max_unused must be a percentage or a size, for example '5%'. "
+                "'unlimited' tolerates any amount of dead space, so the job would "
+                "repack nothing and only repeat what the prune job already does."
+            )
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -451,6 +495,7 @@ def _repositories(options: Mapping[str, Any]) -> tuple[RepositoryConfig, ...]:
             return ()
         prune = _section(options, "prune")
         check = _section(options, "check")
+        repack = _section(options, "repack")
         return (
             RepositoryConfig(
                 name=_as_str(options.get("name"), DEFAULT_REPOSITORY_NAME),
@@ -461,6 +506,7 @@ def _repositories(options: Mapping[str, Any]) -> tuple[RepositoryConfig, ...]:
                 retention=defaults,
                 prune_healthchecks_url=_as_str(prune.get("healthchecks_url")),
                 check_healthchecks_url=_as_str(check.get("healthchecks_url")),
+                repack_healthchecks_url=_as_str(repack.get("healthchecks_url")),
             ),
         )
 
@@ -482,6 +528,7 @@ def _repositories(options: Mapping[str, Any]) -> tuple[RepositoryConfig, ...]:
                 retention=_retention(raw, defaults),
                 prune_healthchecks_url=_as_str(raw.get("prune_healthchecks_url")),
                 check_healthchecks_url=_as_str(raw.get("check_healthchecks_url")),
+                repack_healthchecks_url=_as_str(raw.get("repack_healthchecks_url")),
             )
         )
     return tuple(repositories)
@@ -495,6 +542,7 @@ def settings_from_options(
     environ = os.environ if environ is None else environ
     prune_raw = _section(options, "prune")
     check_raw = _section(options, "check")
+    repack_raw = _section(options, "repack")
     mqtt_raw = _section(options, "mqtt")
     web_raw = _section(options, "web")
 
@@ -519,6 +567,14 @@ def settings_from_options(
             ).strip(),
             rotate_subset=_as_bool(check_raw.get("rotate_subset"), True),
             with_cache=_as_bool(check_raw.get("with_cache"), True),
+        ),
+        repack=RepackConfig(
+            enabled=_as_bool(repack_raw.get("enabled"), False),
+            schedule=_as_str(repack_raw.get("schedule"), DEFAULT_REPACK_SCHEDULE),
+            healthchecks_url=_as_str(repack_raw.get("healthchecks_url")),
+            max_unused=_as_str(repack_raw.get("max_unused"), "5%"),
+            max_repack_size=_as_str(repack_raw.get("max_repack_size")),
+            dry_run=_as_bool(repack_raw.get("dry_run"), False),
         ),
         mqtt=MqttConfig(
             enabled=_as_bool(mqtt_raw.get("enabled"), True),
@@ -594,6 +650,10 @@ def _env_options(environ: Mapping[str, str]) -> dict[str, Any]:
                 "rotate_subset",
                 "with_cache",
             ),
+        ),
+        "repack": section(
+            "REPACK",
+            ("enabled", "schedule", "healthchecks_url", "max_unused", "max_repack_size", "dry_run"),
         ),
         "mqtt": section("MQTT", ("enabled", "host", "port", "username", "password")),
         "web": section("WEB", ("host", "port", "ingress_only")),

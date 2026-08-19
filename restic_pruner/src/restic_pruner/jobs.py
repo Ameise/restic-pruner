@@ -19,7 +19,15 @@ from typing import Any, Final
 
 from .config import JobName, RepositoryConfig, Settings, parse_subset_slice
 from .healthchecks import HealthchecksClient
-from .restic import MAX_FINDINGS, CheckError, CheckResult, RepoStats, Restic, ResticError
+from .restic import (
+    MAX_FINDINGS,
+    CheckError,
+    CheckResult,
+    ForgetPruneResult,
+    RepoStats,
+    Restic,
+    ResticError,
+)
 from .state import RepositorySnapshot, RunRecord, RunStatus, StateStore, Trigger, new_run_id
 
 _LOGGER: Final = logging.getLogger(__name__)
@@ -123,7 +131,8 @@ class JobRunner:
 
         async with self._lock:
             if dry_run is None:
-                dry_run = self._settings.prune.dry_run if job == "prune" else False
+                config = self._settings.job(job)
+                dry_run = getattr(config, "dry_run", False)
             records = [
                 await self._execute(job, repository, trigger, dry_run) for repository in targets
             ]
@@ -198,6 +207,8 @@ class JobRunner:
         try:
             if job == "prune":
                 await self._run_prune(restic, repository, metrics, dry_run=dry_run)
+            elif job == "repack":
+                await self._run_repack(restic, repository, metrics, dry_run=dry_run)
             else:
                 await self._run_check(restic, repository, metrics)
         except asyncio.CancelledError:
@@ -248,9 +259,45 @@ class JobRunner:
         result = await restic.forget_and_prune(dry_run=dry_run)
         after = await restic.stats() if exact else None
 
+        metrics.update(snapshots_removed=result.removed, snapshots_kept=result.kept)
+        self._record_reclaimed(repository, metrics, result, before, after)
+
+    async def _run_repack(
+        self,
+        restic: Restic,
+        repository: RepositoryConfig,
+        metrics: dict[str, Any],
+        *,
+        dry_run: bool,
+    ) -> None:
+        """``prune`` on its own, to reclaim the dead space prune had to leave.
+
+        No snapshot is touched, so this cannot conflict with the retention
+        policy. It reports the same figures as prune minus the snapshot counts,
+        because there is no forget phase to count.
+        """
+        result = await restic.prune(dry_run=dry_run)
+        self._record_reclaimed(repository, metrics, result, None, None)
+
+    def _record_reclaimed(
+        self,
+        repository: RepositoryConfig,
+        metrics: dict[str, Any],
+        result: ForgetPruneResult,
+        before: RepoStats | None,
+        after: RepoStats | None,
+    ) -> None:
+        """Fill in what a prune-shaped run reclaimed, and remember the new size.
+
+        ``stats --mode raw-data`` is exact but expensive: each call re-opens the
+        repository and re-reads every index, over the network, inside the
+        exclusive lock a concurrent backup is waiting on. restic already prints
+        the same numbers, so by default they are read out of its output and the
+        lock is released that much sooner. *before* and *after* are supplied only
+        when the exact measurement was asked for.
+        """
+        exact = before is not None and after is not None
         metrics.update(
-            snapshots_removed=result.removed,
-            snapshots_kept=result.kept,
             pruned=result.pruned,
             blobs_removed=result.blobs_removed,
             blobs_repacked=result.blobs_repacked,
@@ -258,6 +305,12 @@ class JobRunner:
             prune_summary=result.summary,
             exact_sizes=exact,
         )
+        if result.unused_bytes is not None:
+            # Dead data still in packs that hold live blobs. Only the repack job
+            # gets this back; under the prune job it is what accumulates. Zero is
+            # a real answer here, so the check is for "reported", not "non-zero".
+            metrics["unused_bytes"] = result.unused_bytes
+            metrics["unused_percent"] = result.unused_percent or 0.0
 
         if before is not None and after is not None:
             reclaimed = max(0, before.total_size - after.total_size)
@@ -265,26 +318,32 @@ class JobRunner:
             metrics["snapshot_count"] = after.snapshots_count
             self._remember(repository, after)
         else:
-            # From prune's own "total prune:" and "remaining:" lines. A prune that
-            # forgot nothing prints neither, so the last known size stands rather
-            # than the dashboard dropping to zero.
-            known = self._state.repository(repository.slug).size_bytes
+            # From restic's own "total prune:" and "remaining:" lines. A run that
+            # had nothing to do prints neither, so the last known size stands
+            # rather than the dashboard dropping to zero.
+            previous = self._state.repository(repository.slug)
             reclaimed = result.bytes_removed
-            size_after = result.bytes_remaining or known
+            size_after = result.bytes_remaining or previous.size_bytes
             size_before = size_after + reclaimed
-            metrics["snapshot_count"] = result.kept
-            self._remember_partial(repository, size_after, result.kept)
+            snapshots = result.kept or previous.snapshot_count
+            metrics["snapshot_count"] = snapshots
+            self._remember_partial(repository, size_after, snapshots)
 
         metrics.update(
             repo_size_before=size_before,
             repo_size_after=size_after,
             bytes_reclaimed=reclaimed,
         )
-        about = "" if exact else " (from prune's own output)"
+        about = "" if exact else " (from restic's own output)"
         self._emit(
             f"reclaimed {_human_bytes(reclaimed)} "
             f"({_human_bytes(size_before)} -> {_human_bytes(size_after)}){about}"
         )
+        if result.unused_bytes is not None:
+            self._emit(
+                f"unused: {_human_bytes(result.unused_bytes)} "
+                f"({result.unused_percent or 0.0:.0f}% of the repository)"
+            )
 
     async def _run_check(
         self, restic: Restic, repository: RepositoryConfig, metrics: dict[str, Any]
@@ -458,7 +517,7 @@ def summary_body(run: RunRecord) -> str:
     lines = [headline]
 
     metrics = run.metrics
-    if run.job == "prune":
+    if run.job in ("prune", "repack"):
         if "snapshots_removed" in metrics:
             lines.append(
                 f"snapshots: removed {metrics['snapshots_removed']}, "
@@ -466,7 +525,7 @@ def summary_body(run: RunRecord) -> str:
             )
         if metrics.get("pruned"):
             lines.append(
-                f"prune: {metrics['blobs_removed']} blobs removed, "
+                f"{run.job}: {metrics['blobs_removed']} blobs removed, "
                 f"{metrics['blobs_repacked']} repacked, "
                 f"{metrics['packs_removed']} packs deleted"
             )
@@ -477,6 +536,11 @@ def summary_body(run: RunRecord) -> str:
                 f"reclaimed {_human_bytes(metrics['bytes_reclaimed'])} "
                 f"({_human_bytes(metrics['repo_size_before'])} -> "
                 f"{_human_bytes(metrics['repo_size_after'])})"
+            )
+        if "unused_bytes" in metrics:
+            lines.append(
+                f"unused: {_human_bytes(metrics['unused_bytes'])} "
+                f"({metrics['unused_percent']:.0f}% of the repository)"
             )
     else:
         if metrics.get("read_data_subset"):

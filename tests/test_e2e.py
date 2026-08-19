@@ -16,7 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from conftest import REPO_PASSWORD, requires_restic, snapshot_count
-from restic_pruner.config import Settings
+from restic_pruner.config import RepackConfig, Settings
 from restic_pruner.healthchecks import HealthchecksClient
 from restic_pruner.jobs import JobBusyError, JobRunner, UnknownRepositoryError
 from restic_pruner.state import RunStatus, StateStore, Trigger
@@ -347,3 +347,80 @@ async def test_a_prune_that_forgets_nothing_keeps_the_known_size(restic_repo: Se
     assert second.metrics["repo_size_after"] == first.metrics["repo_size_after"], (
         "the last known size stands rather than dropping to zero"
     )
+
+
+def _with_repack(
+    settings: Settings,
+    *,
+    max_unused: str = "0",
+    healthchecks_url: str = "",
+    dry_run: bool = False,
+) -> Settings:
+    return dataclasses.replace(
+        settings,
+        repack=RepackConfig(
+            enabled=True,
+            max_unused=max_unused,
+            healthchecks_url=healthchecks_url,
+            dry_run=dry_run,
+        ),
+    )
+
+
+async def test_repack_reclaims_space_without_touching_snapshots(restic_repo: Settings) -> None:
+    """The property that makes the job safe: it never removes a snapshot."""
+    settings = _with_repack(restic_repo)
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(settings, session)
+        prune = (await runner.run("prune"))[0]
+        assert prune.status is RunStatus.SUCCESS, prune.error
+        before = snapshot_count(settings, "main")
+
+        run = (await runner.run("repack"))[0]
+
+    assert run.status is RunStatus.SUCCESS, run.error
+    assert run.job == "repack"
+    assert "snapshots_removed" not in run.metrics, "repack does not forget anything"
+    assert snapshot_count(settings, "main") == before
+    log = runner.log_for(run.id) or ""
+    assert "$ restic --retry-lock 1m prune --max-unused 0" in log
+    assert "forget" not in log
+
+
+async def test_repack_pings_its_own_healthchecks_url(
+    restic_repo: Settings, pings: tuple[PingLog, str]
+) -> None:
+    ping_log, ping_url = pings
+    settings = _with_repack(restic_repo, healthchecks_url=ping_url)
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(settings, session)
+        await runner.run("prune")
+        run = (await runner.run("repack"))[0]
+
+    assert run.status is RunStatus.SUCCESS, run.error
+    assert ping_log.paths == ["/hc/start", "/hc"]
+    body = ping_log.bodies[1]
+    assert "repack on main: success" in body
+    assert "reclaimed" in body
+
+
+async def test_a_repack_dry_run_changes_nothing(restic_repo: Settings) -> None:
+    settings = _with_repack(restic_repo, dry_run=True)
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(settings, session)
+        await runner.run("prune")
+        run = (await runner.run("repack"))[0]
+
+    assert run.status is RunStatus.SUCCESS, run.error
+    assert run.dry_run is True
+    assert snapshot_count(settings, "main") == 1
+
+
+async def test_prune_reports_unused_space(restic_repo: Settings) -> None:
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(restic_repo, session)
+        run = (await runner.run("prune"))[0]
+
+    assert run.status is RunStatus.SUCCESS, run.error
+    assert "unused_bytes" in run.metrics, "restic prints it; it belongs in the metrics"
+    assert run.metrics["unused_bytes"] >= 0

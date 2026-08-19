@@ -1,6 +1,6 @@
 ---
 name: Restic Pruner
-version: "0.2.0"
+version: "0.3.0"
 slug: restic_pruner
 description: >-
   Scheduled restic forget/prune and repository checks, reported to
@@ -45,6 +45,13 @@ options:
     # The n-th of four equal parts, advancing every run: four weekly checks
     # verify all of the pack data. "" checks the structure only.
     read_data_subset: 1/4
+  repack:
+    # Off by default: it takes an exclusive lock to rewrite pack files, which
+    # should be a deliberate choice. See DOCS.md before turning it on.
+    enabled: false
+    schedule: "17 4 1 * *"
+    healthchecks_url: ""
+    max_unused: 5%
   log_level: info
 schema:
   # Single repository: fill these in and leave "repositories" empty.
@@ -67,6 +74,7 @@ schema:
       environment: str?
       prune_healthchecks_url: str?
       check_healthchecks_url: str?
+      repack_healthchecks_url: str?
       keep_last: int(0,)?
       keep_hourly: int(0,)?
       keep_daily: int(0,)?
@@ -98,6 +106,13 @@ schema:
     read_data_subset: str?
     rotate_subset: bool?
     with_cache: bool?
+  repack:
+    enabled: bool?
+    schedule: str?
+    healthchecks_url: str?
+    max_unused: str?
+    max_repack_size: str?
+    dry_run: bool?
   retry_lock: str?
   healthchecks_base_url: str?
   healthchecks_body: list(summary|log|none)?
