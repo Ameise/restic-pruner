@@ -27,6 +27,11 @@ SOURCES = {
     "restic_pruner/src/restic_pruner/__init__.py": re.compile(
         r'^__version__\s*=\s*"(?P<version>[^"]+)"', re.MULTILINE
     ),
+    # The page compares this against what the API reports, to notice when a
+    # browser is showing it from a cache older than the running add-on.
+    "restic_pruner/src/restic_pruner/web/index.html": re.compile(
+        r'<meta name="build-version" content="(?P<version>[^"]+)">'
+    ),
 }
 
 
