@@ -86,7 +86,7 @@ def create_app(
     app.router.add_post("/api/unlock", handle_unlock)
     app.router.add_get("/", handle_index)
     if WEB_ROOT.is_dir():
-        app.router.add_static("/static", WEB_ROOT)
+        app.router.add_static("/static", WEB_ROOT, append_version=True)
     app.on_cleanup.append(_cancel_tasks)
     return app
 
@@ -210,7 +210,11 @@ async def handle_index(request: web.Request) -> web.StreamResponse:
     index = WEB_ROOT / "index.html"
     if not index.is_file():
         raise web.HTTPNotFound(reason="web UI not installed")
-    return web.FileResponse(index)
+    # Revalidate every time. Without an explicit Cache-Control a browser is free
+    # to apply heuristic freshness -- a fraction of the file's age -- and serve
+    # the page from cache without asking. After an add-on update that means the
+    # previous version's UI, indefinitely, while the new one runs underneath it.
+    return web.FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 async def _json_body(request: web.Request) -> dict[str, Any]:
