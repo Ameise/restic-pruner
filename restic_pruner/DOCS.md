@@ -46,8 +46,9 @@ referenced here as `/config/repo.key`.
 
 ### `environment`
 
-Backend credentials, passed to restic as environment variables. Values are stored as
-add-on secrets and masked in the UI.
+Backend credentials, passed to restic as environment variables. The `value` fields use the
+`password` schema type, so the Configuration UI masks them while you type. They are stored
+in the add-on's own options like any other setting — masking is not encryption.
 
 ```yaml
 environment:
