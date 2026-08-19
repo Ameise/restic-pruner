@@ -48,7 +48,7 @@
   .row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 14px; }
   .row > span:first-child { color: var(--muted); }
   .row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
-  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 18px; }
   .split h4 { margin: 10px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
   .pill {
     display: inline-flex; align-items: center;
@@ -234,10 +234,21 @@ function retentionSummary(retention) {
   return parts.join(' ') || 'none';
 }
 
+function latestUnused(...runs) {
+  const measured = runs
+    .filter((run) => run && run.metrics && run.metrics.unused_bytes !== undefined)
+    .sort((a, b) => String(a.finished_at || '').localeCompare(String(b.finished_at || '')));
+  return measured.length ? measured[measured.length - 1].metrics.unused_bytes : undefined;
+}
+
 function repositoryCard(repository, running) {
   const prune = repository.jobs.prune;
   const check = repository.jobs.check;
+  const repack = repository.jobs.repack;
   const metrics = (prune.last_run && prune.last_run.metrics) || {};
+  // Both prune and repack measure unused space, and either can be the newer of
+  // the two, so take it from whichever finished last.
+  const unused = latestUnused(prune.last_run, repack.last_run);
   const disabled = running ? 'disabled' : '';
   return `<section class="card" data-repository="${escapeHtml(repository.slug)}">
     <div class="card-head">
@@ -261,11 +272,17 @@ function repositoryCard(repository, running) {
         <div class="row"><span>Last</span><span>${check.last_run ? when(check.last_run.finished_at || check.last_run.started_at) : '–'}</span></div>
         <div class="row"><span>Verified</span><span>${(check.last_run && check.last_run.metrics && check.last_run.metrics.read_data_subset) || '–'}</span></div>
       </div>
+      <div>
+        <h4>Repack ${pill(repack.last_status)}</h4>
+        <div class="row"><span>Last</span><span>${repack.last_run ? when(repack.last_run.finished_at || repack.last_run.started_at) : '–'}</span></div>
+        <div class="row"><span>Unused</span><span>${unused === undefined ? '–' : bytes(unused)}</span></div>
+      </div>
     </div>
     <div class="actions">
       <button class="primary small" data-run="prune" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Prune</button>
       <button class="small" data-run="prune" data-dry="1" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Dry run</button>
       <button class="small" data-run="check" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Check</button>
+      <button class="small" data-run="repack" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Repack</button>
       <button class="small danger" data-unlock="${escapeHtml(repository.slug)}" ${disabled}>Unlock</button>
     </div>
   </section>`;
@@ -364,8 +381,8 @@ async function refreshHistory() {
   body.innerHTML = data.runs.map((run) => {
     const detail = run.error
       ? `<span class="muted">${escapeHtml(run.error.split('\n')[0]).slice(0, 80)}</span>`
-      : run.job === 'prune' && run.metrics.bytes_reclaimed !== undefined
-        ? `${run.metrics.snapshots_removed} removed · ${bytes(run.metrics.bytes_reclaimed)} freed`
+      : (run.job === 'prune' || run.job === 'repack') && run.metrics.bytes_reclaimed !== undefined
+        ? `${run.metrics.snapshots_removed !== undefined ? `${run.metrics.snapshots_removed} removed · ` : ''}${bytes(run.metrics.bytes_reclaimed)} freed`
         : run.job === 'check' && run.metrics.read_data_subset
           ? `${escapeHtml(String(run.metrics.read_data_subset))}${run.metrics.snapshot_count !== undefined ? ` · ${run.metrics.snapshot_count} snapshots` : ''}`
           : '';

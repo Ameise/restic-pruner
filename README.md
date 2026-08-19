@@ -10,8 +10,9 @@ It also runs as a plain Docker container if you don't use Home Assistant.
 Both jobs are infrequent, long-running, and hold an exclusive lock on the repository
 while they work, so they are normally scheduled around the backups themselves.
 
-- **Two scheduled jobs.** `prune` (`forget --prune`) and `check` (integrity
-  verification), each on its own cron schedule.
+- **Three scheduled jobs.** `prune` (`forget --prune`), `check` (integrity
+  verification) and `repack` (reclaim dead space inside pack files, off by
+  default), each on its own cron schedule.
 - **Many repositories, one schedule.** They are maintained one after another, never in
   parallel. A failure on one does not stop the rest.
 - **healthchecks.io reporting.** `/start` when a run begins, success or the restic exit
@@ -92,17 +93,18 @@ Both jobs are configured, not built in, and either can be turned off:
 | --- | --- | --- | --- |
 | prune | `prune.schedule` | `5 3 * * 0` | Sundays 03:05 |
 | check | `check.schedule` | `5 5 * * 3` | Wednesdays 05:05 |
+| repack | `repack.schedule` | `17 4 1 * *` | 04:17 on the 1st — **off by default** |
 
 Standard five-field cron, in the timezone Home Assistant gives the add-on. Set
-`enabled: false` on either job to stop it running at all. Missed runs are not caught up.
+`enabled: false` on any job to stop it running at all. Missed runs are not caught up.
 
-The minute is `5` rather than `0` deliberately: both jobs take an exclusive lock, and a
-job that starts at `:05` and finishes within ten minutes never collides with a producer
-backing up on the quarter hour.
+The minute is not `0` deliberately: every job takes an exclusive lock, and one that
+starts a few minutes past — and, for repack, a couple of minutes *after* a quarter
+hour — never collides with a producer backing up on the quarter hour.
 
 ## Interaction with backups
 
-**Both** jobs hold an exclusive lock on the repository for as long as they run. Any
+**Every** job holds an exclusive lock on the repository for as long as it runs. Any
 restic operation that starts during that window fails with exit code 11 unless it is
 willing to wait, so backups running against the same repository need `--retry-lock`:
 

@@ -199,6 +199,63 @@ hundred megabytes per run.
 Each run logs the exact command line it ran, so the scope that was actually verified is
 visible in the job history rather than inferred.
 
+### `repack`
+
+```yaml
+repack:
+  enabled: false
+  schedule: "17 4 1 * *"     # 04:17 on the 1st of the month
+  healthchecks_url: "https://hc-ping.com/<uuid>"
+  max_unused: "5%"
+  max_repack_size: ""        # e.g. 2G, to bound one run
+  dry_run: false
+```
+
+**What it is for.** restic bundles blobs into pack files of a few megabytes, and a
+pack is the smallest thing it can delete. When `forget` drops snapshots their blobs
+become garbage — but they sit in packs that also hold blobs still in use. `prune`
+deletes the packs that are entirely dead and has to leave the rest alone. What stays
+behind is *unused space*, and prune reports it:
+
+```
+remaining:          1810 blobs / 144.292 MiB
+unused size after prune: 43.340 MiB (30.04% of remaining size)
+```
+
+The only way to reclaim it is to download those packs and write them out again
+without the dead blobs. That is repacking, and it is why this is a separate job.
+
+**It never touches snapshots.** This job runs `restic prune` on its own, with no
+`forget`, so it cannot remove a snapshot and cannot disagree with your retention
+policy. In that sense it is the safest of the three jobs.
+
+**It is a superset of `prune`.** Repacking is not a distinct restic operation — it
+is `prune` with a tighter `--max-unused`. A repack run therefore redoes everything
+the prune job does (index load, pack scan, dead-pack deletion) and then also
+rewrites partial packs. Give it a rarer schedule than prune rather than the same
+one; there is nothing to gain from running both close together.
+
+**`max_unused` is the point of the job.** It is a target, not a command to repack
+everything: at `5%`, restic repacks only as much as it takes to get unused space
+under 5% of the repository, then stops. `0` means repack everything, and is the most
+expensive. `unlimited` is refused here — it tolerates any amount of dead space, so
+the job would repack nothing and merely repeat what prune already did.
+
+**Sizing it.** The cost is download traffic and lock time, not storage. Backblaze
+B2, for instance, charges $0.01/GB egress but gives you 3× your stored data free
+every month, so a repository of a few gigabytes can be repacked in full for nothing.
+Lock time is the real constraint: this job holds the repository exclusively for
+longer than prune does. On a large repository set `max_repack_size` (e.g. `2G`) so
+each run is bounded and the repository converges over several months instead of one
+very long lock.
+
+**Does unused space grow forever?** Partly. Packs younger than your retention
+horizon tend to die wholesale — their blobs were written together and expire
+together — so their waste is reclaimed for free. Packs pinned by a single long-lived
+blob never are. Expect a quick rise to a plateau and then a slow creep. Watch the
+`Unused space` sensor for a few months before deciding whether you need this job at
+all; on a small repository the honest answer is usually that you do not.
+
 ### Other options
 
 | Option | Default | |
@@ -208,6 +265,7 @@ visible in the job history rather than inferred.
 | `healthchecks_base_url` | `https://hc-ping.com` | Only used when you enter bare UUIDs |
 | `healthchecks_body` | `summary` | `summary`, `log` or `none` — see below |
 | `lock_hostname` | `true` | Name the job in restic's repository lock — see below |
+| `repack.dry_run` | `false` | Report what a repack would rewrite without doing it |
 | `history_limit` | `50` | Runs and run logs kept |
 | `mqtt` | auto | Leave empty; the broker is discovered via the Supervisor |
 | `log_level` | `info` | `trace`, `debug`, `info`, `warning`, `error` |
@@ -216,11 +274,12 @@ visible in the job history rather than inferred.
 
 Both jobs are configured, never built in. `prune.schedule` and `check.schedule` are
 standard five-field cron expressions evaluated in the timezone Home Assistant gives the
-add-on, including across daylight saving changes, and either job can be switched off
+add-on, including across daylight saving changes, and any job can be switched off
 entirely with `enabled: false`. Defaults: prune `5 3 * * 0` (Sundays 03:05), check
-`5 5 * * 3` (Wednesdays 05:05).
+`5 5 * * 3` (Wednesdays 05:05), repack `17 4 1 * *` (04:17 on the 1st, off unless
+you enable it).
 
-**Why five past.** Both jobs take an exclusive lock for their whole run. Anything else
+**Why five past.** Every job takes an exclusive lock for its whole run. Anything else
 backing up to the same repository is blocked meanwhile, and gives up once its own
 `--retry-lock` window expires. A producer that backs up on the hour and every quarter
 past has a fifteen-minute rhythm: a job starting at `:00` collides with that backup
@@ -274,9 +333,9 @@ retention.
 
 ## Sharing the repository with a backup client
 
-Both jobs take an **exclusive** lock for their whole run, so a client backing up to the
+Every job takes an **exclusive** lock for its whole run, so a client backing up to the
 same repository is blocked until the job finishes and needs `--retry-lock` set to cover
-it. Two things make that easy to reason about from the other side.
+it. `repack` holds it longest. Two things make that easy to reason about from the other side.
 
 **The lock names the job.** restic writes whatever the operating system reports as the
 hostname into its lock file, which in a container is the container — so by default
@@ -298,10 +357,11 @@ timeline answers "which job held the lock at 03:00 on Wednesday" in seconds.
 
 ## healthchecks.io
 
-Every repository pings independently for every job, so with two repositories you want
-**four checks**. Set them per repository (`prune_healthchecks_url`,
-`check_healthchecks_url`); the job-level `healthchecks_url` is only a fallback for
-repositories that do not have their own.
+Every repository pings independently for every job, so with two repositories and all
+three jobs enabled you want **six checks**. Set them per repository
+(`prune_healthchecks_url`, `check_healthchecks_url`, `repack_healthchecks_url`); the
+job-level `healthchecks_url` is only a fallback for repositories that do not have
+their own.
 
 Each ping pair is:
 
@@ -380,7 +440,8 @@ With an MQTT broker available (the Mosquitto add-on suffices; no configuration n
 the add-on creates a **Restic Pruner** hub device holding the next-run sensors, the
 `running` binary sensor and the run-everything buttons, plus one child device per
 repository — `Restic Pruner (vps)` — with that repository's status, timestamps,
-snapshots removed, space reclaimed, size, snapshot count and its own two buttons.
+snapshots removed, space reclaimed, unused space, size, snapshot count and its own
+buttons.
 
 Entity ids carry the repository name: `sensor.restic_pruner_vps_prune_status`. Renaming
 a repository in the configuration therefore renames its entities, so choose names before

@@ -168,3 +168,48 @@ def test_commands_cover_the_hub_and_every_repository() -> None:
     assert commands["prune:vps"] == ("prune", "vps")
     assert commands["check:nas"] == ("check", "nas")
     assert "prune:unknown" not in commands
+
+
+def test_repack_entities_and_command() -> None:
+    status = {
+        "running": False,
+        "jobs": {"repack": {"next_run": "2026-09-01T04:17:00+00:00"}},
+        "repositories": [
+            {
+                "slug": "vps",
+                "name": "vps",
+                "size_bytes": 1000,
+                "snapshot_count": 3,
+                "jobs": {
+                    "repack": {
+                        "last_status": "success",
+                        "last_success": "2026-08-01T04:20:00+00:00",
+                        "last_run": {
+                            "finished_at": "2026-08-01T04:20:00+00:00",
+                            "metrics": {"unused_bytes": 40, "bytes_reclaimed": 900},
+                        },
+                    },
+                    "prune": {
+                        "last_run": {
+                            "finished_at": "2026-07-26T03:10:00+00:00",
+                            "metrics": {"unused_bytes": 4000},
+                        }
+                    },
+                },
+            }
+        ],
+    }
+    values = entity_values(status)
+    assert values["repack_next_run"] == "2026-09-01T04:17:00+00:00"
+    assert values["vps_repack_status"] == "success"
+    assert values["vps_unused_bytes"] == 40, "the newer of the two runs wins"
+    assert ("repack", "vps") in commands_for(status).values()
+
+
+def test_unused_space_is_unknown_until_something_measures_it() -> None:
+    status = {
+        "running": False,
+        "jobs": {},
+        "repositories": [{"slug": "vps", "name": "vps", "jobs": {}}],
+    }
+    assert entity_values(status)["vps_unused_bytes"] is None

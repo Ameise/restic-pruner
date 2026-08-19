@@ -224,9 +224,10 @@ async def _json_body(request: web.Request) -> dict[str, Any]:
 
 
 def _parse_job(value: str) -> JobName:
-    if value not in JOB_NAMES:
-        raise web.HTTPBadRequest(reason=f"unknown job {value!r}")
-    return "prune" if value == "prune" else "check"
+    for job in JOB_NAMES:
+        if value == job:
+            return job
+    raise web.HTTPBadRequest(reason=f"unknown job {value!r}")
 
 
 def _require_repository(request: web.Request, slug: str) -> None:

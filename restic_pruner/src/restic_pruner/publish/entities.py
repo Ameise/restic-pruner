@@ -88,6 +88,12 @@ HUB_ENTITIES: Final[tuple[EntityDescription, ...]] = (
         icon="mdi:clock-start",
     ),
     EntityDescription(
+        key="repack_next_run",
+        name="Repack next run",
+        device_class="timestamp",
+        icon="mdi:clock-start",
+    ),
+    EntityDescription(
         key="run_prune",
         name="Run prune",
         component="button",
@@ -108,6 +114,13 @@ HUB_ENTITIES: Final[tuple[EntityDescription, ...]] = (
         component="button",
         command="check",
         icon="mdi:shield-search",
+    ),
+    EntityDescription(
+        key="run_repack",
+        name="Run repack",
+        component="button",
+        command="repack",
+        icon="mdi:package-down",
     ),
 )
 
@@ -175,6 +188,33 @@ REPOSITORY_ENTITIES: Final[tuple[EntityDescription, ...]] = (
         icon="mdi:shield-check-outline",
     ),
     EntityDescription(
+        key="repack_status",
+        name="Repack status",
+        device_class="enum",
+        options=STATUS_OPTIONS,
+        icon="mdi:package-down",
+    ),
+    EntityDescription(
+        key="repack_last_run",
+        name="Repack last run",
+        device_class="timestamp",
+        icon="mdi:clock-outline",
+    ),
+    EntityDescription(
+        key="repack_last_success",
+        name="Repack last success",
+        device_class="timestamp",
+        icon="mdi:package-variant-closed-check",
+    ),
+    EntityDescription(
+        key="unused_bytes",
+        name="Unused space",
+        device_class="data_size",
+        state_class="measurement",
+        unit="B",
+        icon="mdi:database-alert-outline",
+    ),
+    EntityDescription(
         key="repository_size",
         name="Repository size",
         device_class="data_size",
@@ -202,6 +242,13 @@ REPOSITORY_ENTITIES: Final[tuple[EntityDescription, ...]] = (
         component="button",
         command="check",
         icon="mdi:shield-search",
+    ),
+    EntityDescription(
+        key="run_repack",
+        name="Run repack",
+        component="button",
+        command="repack",
+        icon="mdi:package-down",
     ),
 )
 
@@ -265,14 +312,17 @@ def entity_values(status: dict[str, Any]) -> dict[str, Any]:
         "running": "ON" if status.get("running") else "OFF",
         "prune_next_run": (jobs.get("prune") or {}).get("next_run"),
         "check_next_run": (jobs.get("check") or {}).get("next_run"),
+        "repack_next_run": (jobs.get("repack") or {}).get("next_run"),
     }
     for repository in status.get("repositories", []):
         slug = repository["slug"]
         repo_jobs = repository.get("jobs") or {}
         prune = repo_jobs.get("prune") or {}
         check = repo_jobs.get("check") or {}
+        repack = repo_jobs.get("repack") or {}
         prune_last = prune.get("last_run") or {}
         check_last = check.get("last_run") or {}
+        repack_last = repack.get("last_run") or {}
         metrics = prune_last.get("metrics") or {}
         values.update(
             {
@@ -285,11 +335,31 @@ def entity_values(status: dict[str, Any]) -> dict[str, Any]:
                 f"{slug}_check_status": check.get("last_status", "never"),
                 f"{slug}_check_last_run": check_last.get("finished_at"),
                 f"{slug}_check_last_success": check.get("last_success"),
+                f"{slug}_repack_status": repack.get("last_status", "never"),
+                f"{slug}_repack_last_run": repack_last.get("finished_at"),
+                f"{slug}_repack_last_success": repack.get("last_success"),
+                f"{slug}_unused_bytes": _latest_unused(prune_last, repack_last),
                 f"{slug}_repository_size": repository.get("size_bytes"),
                 f"{slug}_snapshot_count": repository.get("snapshot_count"),
             }
         )
     return values
+
+
+def _latest_unused(*runs: dict[str, Any]) -> int | None:
+    """Dead space as of the most recent run that measured it.
+
+    Both prune and repack report it, and either can be the newer of the two, so
+    the figure is taken from whichever finished last rather than from one job.
+    """
+    measured: list[tuple[str, int]] = [
+        (str(run.get("finished_at") or ""), int(unused))
+        for run in runs
+        if (unused := (run.get("metrics") or {}).get("unused_bytes")) is not None
+    ]
+    if not measured:
+        return None
+    return max(measured, key=lambda item: item[0])[1]
 
 
 def _round(value: Any) -> float | None:

@@ -83,6 +83,19 @@ configuration:
       full paths of everything backed up. "log" sends the run log instead, and
       "none" sends no body at all. The add-on keeps the full log locally either
       way.
+  repack:
+    name: Repack job
+    description: >-
+      Reclaims dead space left inside pack files. forget --prune can only delete
+      a pack when every blob in it is dead; a pack still holding one live blob
+      keeps its dead neighbours, and only rewriting the pack gets that space
+      back. This job runs restic prune on its own to do that, so it never
+      touches snapshots and cannot conflict with the retention policy. It is a
+      superset of the prune job and takes an exclusive lock for longer, which is
+      why it is off by default and belongs on a rarer schedule. max_unused is
+      how much dead space to tolerate, for example 5%; "unlimited" is refused
+      here, because it would repack nothing. Use max_repack_size, for example
+      2G, to bound one run and let a large repository converge over several.
   lock_hostname:
     name: Name the job in the repository lock
     description: >-

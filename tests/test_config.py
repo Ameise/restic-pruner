@@ -330,3 +330,69 @@ def test_defaults_start_five_past_the_hour(settings: Settings) -> None:
     assert defaults.check.read_data_subset == "1/4", "rotating, not a fixed sample"
     assert defaults.check.rotate_subset is True
     assert defaults.prune.exact_reclaimed is False, "no second stats call by default"
+
+
+def test_repack_options_round_trip() -> None:
+    settings = settings_from_options(
+        {
+            "repository": "/srv/repo",
+            "password": "x",
+            "repack": {
+                "enabled": True,
+                "schedule": "17 4 1 * *",
+                "healthchecks_url": "https://hc-ping.com/abc",
+                "max_unused": "2%",
+                "max_repack_size": "2G",
+                "dry_run": True,
+            },
+        },
+        {},
+    )
+    settings.validate()
+    assert settings.repack.enabled is True
+    assert settings.repack.max_unused == "2%"
+    assert settings.repack.max_repack_size == "2G"
+    assert settings.repack.dry_run is True
+    assert settings.job("repack") is settings.repack
+
+
+def test_repack_options_round_trip_through_env(tmp_path: Path) -> None:
+    settings = load_settings(
+        tmp_path / "missing.json",
+        {
+            "RESTIC_PRUNER_REPOSITORY": "/srv/repo",
+            "RESTIC_PRUNER_PASSWORD": "x",
+            "RESTIC_PRUNER_REPACK_ENABLED": "true",
+            "RESTIC_PRUNER_REPACK_MAX_UNUSED": "1G",
+            "RESTIC_PRUNER_REPACK_SCHEDULE": "17 4 1 * *",
+        },
+    )
+    assert settings.repack.enabled is True
+    assert settings.repack.max_unused == "1G"
+
+
+def test_repack_is_off_by_default() -> None:
+    """It takes an exclusive lock to rewrite packs; that should be asked for."""
+    settings = settings_from_options({"repository": "/srv/repo", "password": "x"}, {})
+    assert settings.repack.enabled is False
+    assert settings.repack.schedule == "17 4 1 * *"
+
+
+def test_per_repository_repack_url() -> None:
+    settings = settings_from_options(
+        {
+            "repositories": [
+                {
+                    "name": "vps",
+                    "repository": "/srv/repo",
+                    "password": "x",
+                    "repack_healthchecks_url": "https://hc-ping.com/repack",
+                }
+            ],
+            "repack": {"healthchecks_url": "https://hc-ping.com/fallback"},
+        },
+        {},
+    )
+    vps = settings.repositories[0]
+    assert settings.healthchecks_url(vps, "repack") == "https://hc-ping.com/repack"
+    assert settings.healthchecks_url(vps, "check") == ""

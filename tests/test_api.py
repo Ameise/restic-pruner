@@ -60,7 +60,7 @@ async def test_health(client: Client) -> None:
 async def test_status_document_shape(client: Client) -> None:
     payload = await (await client.get("/api/status")).json()
     assert payload["running"] is False
-    assert set(payload["jobs"]) == {"prune", "check"}
+    assert set(payload["jobs"]) == {"prune", "check", "repack"}
     assert payload["jobs"]["prune"]["schedule"] == "0 3 * * 0"
     assert payload["jobs"]["prune"]["next_run"] is not None
     assert "version" in payload
