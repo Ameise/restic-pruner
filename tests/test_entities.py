@@ -213,3 +213,12 @@ def test_unused_space_is_unknown_until_something_measures_it() -> None:
         "repositories": [{"slug": "vps", "name": "vps", "jobs": {}}],
     }
     assert entity_values(status)["vps_unused_bytes"] is None
+
+
+def test_every_job_can_be_triggered_from_home_assistant() -> None:
+    """Including the dry runs: a config toggle is no substitute for a button."""
+    status = {"running": False, "jobs": {}, "repositories": []}
+    commands = commands_for(status)
+    assert commands["repack"] == ("repack", None)
+    assert commands["repack_dry"] == ("repack_dry", None)
+    assert commands["prune_dry"] == ("prune_dry", None)

@@ -122,6 +122,14 @@ HUB_ENTITIES: Final[tuple[EntityDescription, ...]] = (
         command="repack",
         icon="mdi:package-down",
     ),
+    EntityDescription(
+        key="run_repack_dry",
+        name="Run repack (dry run)",
+        component="button",
+        command="repack_dry",
+        icon="mdi:package-down",
+        entity_category="diagnostic",
+    ),
 )
 
 #: Entities created once per repository. Keys are prefixed with its slug.

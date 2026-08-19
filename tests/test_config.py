@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from restic_pruner.config import (
+    JOB_NAMES,
     ConfigError,
     RepositoryConfig,
     Retention,
@@ -396,3 +397,20 @@ def test_per_repository_repack_url() -> None:
     vps = settings.repositories[0]
     assert settings.healthchecks_url(vps, "repack") == "https://hc-ping.com/repack"
     assert settings.healthchecks_url(vps, "check") == ""
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("prune", ("prune", False)),
+        ("prune_dry", ("prune", True)),
+        ("check", ("check", False)),
+        ("repack", ("repack", False)),
+        ("repack_dry", ("repack", True)),
+    ],
+)
+def test_button_payloads_map_onto_a_job(command: str, expected: tuple[str, bool]) -> None:
+    """The parsing App._handle_command does, pinned so a new job cannot break it."""
+    name, _, suffix = command.partition("_")
+    job = next((candidate for candidate in JOB_NAMES if candidate == name), "prune")
+    assert (job, suffix == "dry") == expected
