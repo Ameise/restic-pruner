@@ -421,13 +421,19 @@ you self-host.
 
 ## The web UI
 
-The add-on adds a sidebar panel showing the schedule, one card per repository with its
-size, snapshot count and last prune and check, a live log while a job runs, and the last
-25 runs. Click any run in the history to read its full log.
+The add-on adds a sidebar panel showing all three schedules, one card per repository
+with its size, snapshot count, unused space and last run of each job, a live log while a
+job runs, and the last 25 runs. Click any run in the history to read its full log.
 
-**Prune all now** / **Check all now** work through every repository; the buttons on a
-repository card act on that one alone. **Dry run** passes `--dry-run`: it reports
-exactly what would be removed and changes nothing. Use it the first time.
+**Prune all now**, **Check all now** and **Repack all now** work through every
+repository; the buttons on a repository card act on that one alone. The **(dry run)**
+buttons pass `--dry-run`: they report exactly what would be removed or rewritten and
+change nothing. Use them the first time you run either job.
+
+The same buttons exist as Home Assistant entities, so a dry run is one press from either
+place — you never have to set `dry_run` in the configuration to try something out. The
+`prune.dry_run` and `repack.dry_run` options are for the different case of pinning a job
+to dry-run permanently, for instance while you are still deciding on a retention policy.
 
 **Remove stale locks** runs `restic unlock`. Nothing scheduled ever does this
 automatically — a lock is usually another restic process doing its job, and removing it

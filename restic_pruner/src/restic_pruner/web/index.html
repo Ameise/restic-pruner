@@ -117,11 +117,17 @@
         <div class="row"><span>Check</span><span id="check-schedule" class="target"></span></div>
         <div class="row"><span>Next check</span><span id="check-next">–</span></div>
       </div>
+      <div>
+        <div class="row"><span>Repack</span><span id="repack-schedule" class="target"></span></div>
+        <div class="row"><span>Next repack</span><span id="repack-next">–</span></div>
+      </div>
     </div>
     <div class="actions">
       <button class="primary" data-run="prune">Prune all now</button>
-      <button data-run="prune" data-dry="1">Dry run all</button>
+      <button data-run="prune" data-dry="1">Prune (dry run)</button>
       <button data-run="check">Check all now</button>
+      <button data-run="repack">Repack all now</button>
+      <button data-run="repack" data-dry="1">Repack (dry run)</button>
     </div>
   </section>
 
@@ -280,9 +286,10 @@ function repositoryCard(repository, running) {
     </div>
     <div class="actions">
       <button class="primary small" data-run="prune" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Prune</button>
-      <button class="small" data-run="prune" data-dry="1" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Dry run</button>
+      <button class="small" data-run="prune" data-dry="1" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Prune (dry)</button>
       <button class="small" data-run="check" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Check</button>
       <button class="small" data-run="repack" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Repack</button>
+      <button class="small" data-run="repack" data-dry="1" data-repository="${escapeHtml(repository.slug)}" ${disabled}>Repack (dry)</button>
       <button class="small danger" data-unlock="${escapeHtml(repository.slug)}" ${disabled}>Unlock</button>
     </div>
   </section>`;
@@ -317,8 +324,10 @@ async function refreshStatusOnce() {
 
   $('prune-schedule').textContent = status.jobs.prune.enabled ? status.jobs.prune.schedule : 'disabled';
   $('check-schedule').textContent = status.jobs.check.enabled ? status.jobs.check.schedule : 'disabled';
+  $('repack-schedule').textContent = status.jobs.repack.enabled ? status.jobs.repack.schedule : 'disabled';
   $('prune-next').innerHTML = status.jobs.prune.enabled ? when(status.jobs.prune.next_run) : '<span class="muted">disabled</span>';
   $('check-next').innerHTML = status.jobs.check.enabled ? when(status.jobs.check.next_run) : '<span class="muted">disabled</span>';
+  $('repack-next').innerHTML = status.jobs.repack.enabled ? when(status.jobs.repack.next_run) : '<span class="muted">disabled</span>';
 
   // Only rebuild the cards when their content actually changed; see when().
   const signature = JSON.stringify([status.repositories, running]);

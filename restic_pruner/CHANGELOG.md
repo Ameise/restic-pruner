@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1
+
+The repack job shipped with only one of prune's two buttons, so the only way to
+try a repack without committing to it was to set `repack.dry_run` on the
+configuration page — a persistent setting standing in for a one-off action.
+
+- **Repack (dry run)** buttons in the web UI and as a Home Assistant entity,
+  alongside the existing prune ones.
+- **Repack all now** in the web UI, which was missing entirely: repack could only
+  be started per repository, not across all of them.
+- The Schedule card shows repack's schedule and next run, which it did not.
+- The per-repository dry-run button is now labelled **Prune (dry)** rather than
+  **Dry run**, since there are two of them.
+
 ## 0.3.0
 
 ### A `repack` job, to reclaim the space prune cannot
