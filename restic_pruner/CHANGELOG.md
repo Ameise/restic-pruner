@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.3
+
+0.3.2 stopped the panel *becoming* stale, but could not rescue a copy a browser
+had already cached -- and reloading the Home Assistant page does not fix it,
+because a normal reload of a page does not revalidate a document inside a frame.
+The panel could therefore keep rendering a previous release indefinitely, through
+reloads and restarts, with the request never reaching the add-on at all.
+
+The page now knows which version it was built from and compares that against what
+`/api/status` reports:
+
+- On a mismatch it reloads itself once at a URL carrying the running version.
+  A cache has never seen that URL, so it must fetch, and the page repairs itself.
+- If it still disagrees afterwards, a banner says so and names both versions,
+  rather than leaving a stale page looking perfectly healthy.
+
+`scripts/check_versions.py` now covers the version baked into the page too, so
+the four places that carry it cannot drift apart.
+
+**Stuck on an older panel right now?** Right-click it and choose **Reload frame**.
+Once 0.3.3 has loaded once, it looks after itself.
+
 ## 0.3.2
 
 The web UI could keep showing the previous version's page after an add-on

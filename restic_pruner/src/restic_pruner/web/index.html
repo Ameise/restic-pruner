@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Restic Pruner</title>
+<!-- The version this page was built from. Compared at runtime against what the
+     add-on reports, so a page served from a stale cache can notice and say so.
+     Kept in step with the other version strings by scripts/check_versions.py. -->
+<meta name="build-version" content="0.3.3">
 <style>
   :root {
     color-scheme: light dark;
@@ -48,6 +52,11 @@
   .row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 14px; }
   .row > span:first-child { color: var(--muted); }
   .row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .stale {
+    position: fixed; inset: 0 0 auto 0; z-index: 20;
+    padding: 10px 16px; text-align: center; font-size: 13px;
+    background: var(--fail); color: #fff;
+  }
   .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 18px; }
   .split h4 { margin: 10px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
   .pill {
@@ -149,9 +158,14 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<div class="stale" id="stale" hidden></div>
 
 <script>
 const BASE = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
+const BUILD_VERSION = document.querySelector('meta[name="build-version"]').content;
+//: Set once we have already tried reloading at a fresh URL, so a genuine
+//: mismatch cannot put the page into a reload loop.
+let reloadedForVersion = new URLSearchParams(location.search).has('v');
 const api = (path) => BASE + 'api/' + path;
 const $ = (id) => document.getElementById(id);
 
@@ -316,6 +330,8 @@ async function refreshStatusOnce() {
     return;
   }
 
+  checkForStalePage(status.version);
+
   const running = status.running;
   $('global-status').className = 'pill ' + (running ? 'running' : 'success');
   $('global-status').textContent = running
@@ -377,6 +393,27 @@ async function pumpLiveLog() {
     }
     logOffset = data.offset;
   } catch (error) { /* transient; the next tick retries */ }
+}
+
+// A framed page can be served from cache indefinitely: reloading the parent
+// document does not revalidate a subframe, so the panel can keep rendering a
+// previous release while the add-on underneath it has moved on. The page knows
+// which version it was built from and the API says which is running, so the
+// mismatch is detectable -- and fixable, by reloading at a URL the cache has
+// never seen.
+function checkForStalePage(liveVersion) {
+  if (!liveVersion || liveVersion === BUILD_VERSION) return;
+  if (!reloadedForVersion) {
+    reloadedForVersion = true;
+    location.replace(BASE + '?v=' + encodeURIComponent(liveVersion));
+    return;
+  }
+  const stale = $('stale');
+  stale.hidden = false;
+  stale.innerHTML =
+    `This page was built from v${escapeHtml(BUILD_VERSION)} but the add-on is running ` +
+    `v${escapeHtml(liveVersion)}. Your browser is showing a cached copy — ` +
+    `right-click the panel and choose <strong>Reload frame</strong>.`;
 }
 
 async function refreshHistory() {
