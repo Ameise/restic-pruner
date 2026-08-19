@@ -43,6 +43,23 @@ ENV_PREFIX: Final = "RESTIC_PRUNER_"
 
 LOG_LEVELS: Final = ("trace", "debug", "info", "warning", "error")
 
+#: What to put in the healthchecks.io ping body.
+#:
+#: ``summary`` sends only text this program generates -- counts, sizes and its
+#: own error line -- and never restic's output. That matters because restic's
+#: forget listing includes hostnames, tags and the absolute paths of everything
+#: being backed up, which has no business being sent to a third party.
+BODY_MODES: Final = ("summary", "log", "none")
+
+#: Job defaults. The minute is deliberately not zero: a producer backing up on
+#: the hour and every quarter past has a lock-wait budget, and a job that starts
+#: at ``:05`` and finishes inside five minutes never collides with ``:15``.
+DEFAULT_PRUNE_SCHEDULE: Final = "5 3 * * 0"
+DEFAULT_CHECK_SCHEDULE: Final = "5 5 * * 3"
+
+#: The n-th of four equal parts: four weekly runs verify all of the pack data.
+DEFAULT_READ_DATA_SUBSET: Final = "1/4"
+
 #: Used when the single-repository shorthand does not name the repository.
 DEFAULT_REPOSITORY_NAME: Final = "main"
 
@@ -164,25 +181,84 @@ class PruneConfig:
     """The ``forget --prune`` job."""
 
     enabled: bool = True
-    schedule: str = "0 3 * * 0"
+    #: A few minutes past the hour on purpose: see :data:`DEFAULT_PRUNE_SCHEDULE`.
+    schedule: str = DEFAULT_PRUNE_SCHEDULE
     #: Fallback for repositories that do not carry their own ping URL.
     healthchecks_url: str = ""
     dry_run: bool = False
     #: ``unlimited`` skips repacking entirely, which avoids re-uploading pack data.
     max_unused: str = "unlimited"
     max_repack_size: str = ""
+    #: Measure the reclaimed bytes with ``stats`` before and after instead of
+    #: reading them out of prune's own output. Exact, and expensive: the trailing
+    #: call re-opens the repository and re-reads every index, inside the exclusive
+    #: lock a concurrent backup is waiting on.
+    exact_reclaimed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class CheckConfig:
-    """The ``check`` job."""
+    """The ``check`` job.
+
+    The schedule starts a few minutes past the hour deliberately. A producer
+    backing up on the hour and every quarter past has a lock-wait budget; a job
+    that starts at ``:05`` and finishes inside five minutes never collides with
+    the ``:15`` run at all.
+    """
 
     enabled: bool = True
-    schedule: str = "0 5 * * 3"
+    schedule: str = DEFAULT_CHECK_SCHEDULE
     healthchecks_url: str = ""
-    #: Empty means structure-only. ``5%`` reads a random 5% of pack data.
-    read_data_subset: str = "5%"
+    #: Empty means structure-only. ``n/t`` reads the n-th of t equal parts,
+    #: ``n%`` a random sample of that size.
+    read_data_subset: str = DEFAULT_READ_DATA_SUBSET
+    #: Advance ``n`` in an ``n/t`` subset each run, wrapping at ``t``, so every
+    #: part is eventually verified. A fixed sample re-reads the same data forever.
+    rotate_subset: bool = True
     with_cache: bool = True
+
+
+#: ``n/t`` -- the n-th of t equal parts of the pack data.
+_SUBSET_SLICE_RE: Final = re.compile(r"^(\d+)\s*/\s*(\d+)$")
+#: ``12%`` / ``0.5%`` -- a random sample of that share.
+_SUBSET_PERCENT_RE: Final = re.compile(r"^\d+(?:\.\d+)?%$")
+#: ``500M`` / ``2G`` -- a random sample of that size.
+_SUBSET_SIZE_RE: Final = re.compile(r"^\d+(?:\.\d+)?[KMGT]$", re.IGNORECASE)
+
+
+def parse_subset_slice(value: str) -> tuple[int, int] | None:
+    """Return ``(n, t)`` for an ``n/t`` subset, or ``None`` for any other form."""
+    match = _SUBSET_SLICE_RE.match(value.strip())
+    if match is None:
+        return None
+    return int(match[1]), int(match[2])
+
+
+def validate_read_data_subset(value: str) -> None:
+    """Reject a subset restic would only complain about once it holds the lock."""
+    value = value.strip()
+    if not value:
+        return  # structure-only, which is a legitimate choice
+    if (parsed := parse_subset_slice(value)) is not None:
+        index, parts = parsed
+        if parts < 1:
+            raise ConfigError(f"check.read_data_subset: t must be at least 1 in {value!r}")
+        if not 1 <= index <= parts:
+            raise ConfigError(
+                f"check.read_data_subset: n must be between 1 and {parts} in {value!r}"
+            )
+        return
+    if _SUBSET_PERCENT_RE.match(value):
+        if not 0 < float(value.rstrip("%")) <= 100:
+            raise ConfigError(f"check.read_data_subset: {value!r} is not between 0% and 100%")
+        return
+    if _SUBSET_SIZE_RE.match(value):
+        return
+    raise ConfigError(
+        f"check.read_data_subset: {value!r} is not a subset restic understands. "
+        "Use 'n/t' (the n-th of t equal parts), 'n%', a size like '500M', "
+        "or leave it empty to check the structure only."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +304,13 @@ class Settings:
     history_limit: int = 50
     #: Used to expand a bare check UUID; point this at a self-hosted instance.
     healthchecks_base_url: str = "https://hc-ping.com"
+    #: One of :data:`BODY_MODES`.
+    healthchecks_body: str = "summary"
+    #: Only applies to the ``log`` body mode.
     healthchecks_body_limit: int = 10_000
+    #: Run each job in its own UTS namespace so restic's repository lock names the
+    #: job rather than the container. Falls back silently where the kernel refuses.
+    lock_hostname: bool = True
     data_dir: Path = DEFAULT_DATA_DIR
     restic_binary: str = "restic"
     #: Publish states through the Supervisor's Home Assistant API when MQTT is
@@ -269,6 +351,8 @@ class Settings:
             repo.validate()
         if self.log_level not in LOG_LEVELS:
             raise ConfigError(f"log_level must be one of {', '.join(LOG_LEVELS)}")
+        if self.healthchecks_body not in BODY_MODES:
+            raise ConfigError(f"healthchecks_body must be one of {', '.join(BODY_MODES)}")
         for name in JOB_NAMES:
             job = self.job(name)
             if job.enabled and not croniter.is_valid(job.schedule):
@@ -279,6 +363,7 @@ class Settings:
             raise ConfigError("no job is enabled; enable at least one of prune or check")
         if self.history_limit < 1:
             raise ConfigError("history_limit must be at least 1")
+        validate_read_data_subset(self.check.read_data_subset)
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -418,17 +503,21 @@ def settings_from_options(
         repositories=_repositories(options),
         prune=PruneConfig(
             enabled=_as_bool(prune_raw.get("enabled"), True),
-            schedule=_as_str(prune_raw.get("schedule"), "0 3 * * 0"),
+            schedule=_as_str(prune_raw.get("schedule"), DEFAULT_PRUNE_SCHEDULE),
             healthchecks_url=_as_str(prune_raw.get("healthchecks_url")),
             dry_run=_as_bool(prune_raw.get("dry_run"), False),
             max_unused=_as_str(prune_raw.get("max_unused"), "unlimited"),
             max_repack_size=_as_str(prune_raw.get("max_repack_size")),
+            exact_reclaimed=_as_bool(prune_raw.get("exact_reclaimed"), False),
         ),
         check=CheckConfig(
             enabled=_as_bool(check_raw.get("enabled"), True),
-            schedule=_as_str(check_raw.get("schedule"), "0 5 * * 3"),
+            schedule=_as_str(check_raw.get("schedule"), DEFAULT_CHECK_SCHEDULE),
             healthchecks_url=_as_str(check_raw.get("healthchecks_url")),
-            read_data_subset=_as_str(check_raw.get("read_data_subset"), "5%"),
+            read_data_subset=_as_str(
+                check_raw.get("read_data_subset"), DEFAULT_READ_DATA_SUBSET
+            ).strip(),
+            rotate_subset=_as_bool(check_raw.get("rotate_subset"), True),
             with_cache=_as_bool(check_raw.get("with_cache"), True),
         ),
         mqtt=MqttConfig(
@@ -447,9 +536,11 @@ def settings_from_options(
         ),
         retry_lock=_as_str(options.get("retry_lock"), "15m"),
         healthchecks_base_url=_as_str(options.get("healthchecks_base_url"), "https://hc-ping.com"),
+        healthchecks_body=_as_str(options.get("healthchecks_body"), "summary").lower(),
         log_level=_as_str(options.get("log_level"), "info").lower(),
         timezone=_as_str(environ.get("TZ"), "UTC"),
         history_limit=_as_int(options.get("history_limit"), 50),
+        lock_hostname=_as_bool(options.get("lock_hostname"), True),
         hass_push=_as_bool(options.get("hass_push"), True),
         supervisor_token=supervisor_token,
     )
@@ -476,15 +567,33 @@ def _env_options(environ: Mapping[str, str]) -> dict[str, Any]:
         "environment": get("ENVIRONMENT"),
         "retry_lock": get("RETRY_LOCK"),
         "healthchecks_base_url": get("HEALTHCHECKS_BASE_URL"),
+        "healthchecks_body": get("HEALTHCHECKS_BODY"),
+        "lock_hostname": get("LOCK_HOSTNAME"),
         "log_level": get("LOG_LEVEL"),
         "history_limit": get("HISTORY_LIMIT"),
         "retention": section("KEEP", (*_KEEP_FIELDS, "within")),
         "prune": section(
             "PRUNE",
-            ("enabled", "schedule", "healthchecks_url", "dry_run", "max_unused", "max_repack_size"),
+            (
+                "enabled",
+                "schedule",
+                "healthchecks_url",
+                "dry_run",
+                "max_unused",
+                "max_repack_size",
+                "exact_reclaimed",
+            ),
         ),
         "check": section(
-            "CHECK", ("enabled", "schedule", "healthchecks_url", "read_data_subset", "with_cache")
+            "CHECK",
+            (
+                "enabled",
+                "schedule",
+                "healthchecks_url",
+                "read_data_subset",
+                "rotate_subset",
+                "with_cache",
+            ),
         ),
         "mqtt": section("MQTT", ("enabled", "host", "port", "username", "password")),
         "web": section("WEB", ("host", "port", "ingress_only")),

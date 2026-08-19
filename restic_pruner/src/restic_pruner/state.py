@@ -90,6 +90,9 @@ class RepositorySnapshot:
     uncompressed_bytes: int = 0
     blob_count: int = 0
     snapshot_count: int = 0
+    #: Which part of an ``n/t`` read-data subset the next check should read.
+    #: Persisted so the slice keeps advancing across restarts and updates.
+    next_check_slice: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -104,6 +107,7 @@ class RepositorySnapshot:
             uncompressed_bytes=int(payload.get("uncompressed_bytes", 0)),
             blob_count=int(payload.get("blob_count", 0)),
             snapshot_count=int(payload.get("snapshot_count", 0)),
+            next_check_slice=max(1, int(payload.get("next_check_slice", 1))),
         )
 
 
@@ -213,7 +217,16 @@ class StateStore:
         return self._repositories.get(slug, RepositorySnapshot())
 
     def set_repository(self, slug: str, snapshot: RepositorySnapshot) -> None:
+        # The rotating check slice is bookkeeping, not an observation of the
+        # repository, so it survives a snapshot that does not carry it.
+        snapshot.next_check_slice = self.repository(slug).next_check_slice
         self._repositories[slug] = snapshot
+
+    def set_check_slice(self, slug: str, value: int) -> None:
+        """Remember which part of the pack data the next check should read."""
+        snapshot = self._repositories.setdefault(slug, RepositorySnapshot())
+        snapshot.next_check_slice = max(1, value)
+        self.save()
 
     # -- logs ------------------------------------------------------------
 

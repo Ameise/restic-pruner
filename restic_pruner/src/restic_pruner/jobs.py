@@ -17,9 +17,9 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any, Final
 
-from .config import JobName, RepositoryConfig, Settings
+from .config import JobName, RepositoryConfig, Settings, parse_subset_slice
 from .healthchecks import HealthchecksClient
-from .restic import RepoStats, Restic, ResticError
+from .restic import MAX_FINDINGS, CheckError, CheckResult, RepoStats, Restic, ResticError
 from .state import RepositorySnapshot, RunRecord, RunStatus, StateStore, Trigger, new_run_id
 
 _LOGGER: Final = logging.getLogger(__name__)
@@ -188,13 +188,18 @@ class JobRunner:
         if ping_url:
             await self._healthchecks.start(ping_url, rid=_ping_rid(run.id))
 
-        restic = self.restic_for(repository).with_log(self._emit)
+        restic = (
+            self.restic_for(repository).with_log(self._emit).with_hostname(f"restic-pruner-{job}")
+        )
+        # Filled as the job goes, so a failure still reports whatever it learned
+        # before it failed -- for check, that is the whole point.
+        metrics: dict[str, Any] = {}
+        run.metrics = metrics
         try:
-            metrics = (
-                await self._run_prune(restic, repository, dry_run=dry_run)
-                if job == "prune"
-                else await self._run_check(restic, repository)
-            )
+            if job == "prune":
+                await self._run_prune(restic, repository, metrics, dry_run=dry_run)
+            else:
+                await self._run_check(restic, repository, metrics)
         except asyncio.CancelledError:
             self._finish(run, RunStatus.FAILED, "cancelled: the add-on is shutting down")
             await self._report(ping_url, run, ok=False)
@@ -202,8 +207,9 @@ class JobRunner:
             raise
         except ResticError as exc:
             _LOGGER.error("%s run on %s failed: %s", job, repository.name, exc)
-            self._emit(str(exc))
-            self._finish(run, RunStatus.FAILED, str(exc))
+            detail = _failure_detail(exc)
+            self._emit(detail)
+            self._finish(run, RunStatus.FAILED, detail)
             await self._report(ping_url, run, ok=False, exit_code=exc.exit_code)
             await self._notify()
             return run
@@ -215,7 +221,6 @@ class JobRunner:
             await self._notify()
             return run
 
-        run.metrics = metrics
         self._emit(f"=== {job} run finished in {time.monotonic() - started:.1f}s ===")
         self._finish(run, RunStatus.SUCCESS, None)
         await self._report(ping_url, run, ok=True)
@@ -223,41 +228,102 @@ class JobRunner:
         return run
 
     async def _run_prune(
-        self, restic: Restic, repository: RepositoryConfig, *, dry_run: bool
-    ) -> dict[str, Any]:
-        before = await restic.stats()
-        result = await restic.forget_and_prune(dry_run=dry_run)
-        after = await restic.stats()
-        self._remember(repository, after)
+        self,
+        restic: Restic,
+        repository: RepositoryConfig,
+        metrics: dict[str, Any],
+        *,
+        dry_run: bool,
+    ) -> None:
+        """``forget --prune``, with the reclaimed figures taken as cheaply as possible.
 
-        reclaimed = max(0, before.total_size - after.total_size)
+        ``stats --mode raw-data`` is exact but expensive: each call re-opens the
+        repository and re-reads every index, over the network, inside the
+        exclusive lock a concurrent backup is waiting on. prune already prints
+        the same numbers, so by default they are read out of its output and the
+        lock is released that much sooner.
+        """
+        exact = self._settings.prune.exact_reclaimed
+        before = await restic.stats() if exact else None
+        result = await restic.forget_and_prune(dry_run=dry_run)
+        after = await restic.stats() if exact else None
+
+        metrics.update(
+            snapshots_removed=result.removed,
+            snapshots_kept=result.kept,
+            pruned=result.pruned,
+            blobs_removed=result.blobs_removed,
+            blobs_repacked=result.blobs_repacked,
+            packs_removed=result.packs_removed,
+            prune_summary=result.summary,
+            exact_sizes=exact,
+        )
+
+        if before is not None and after is not None:
+            reclaimed = max(0, before.total_size - after.total_size)
+            size_before, size_after = before.total_size, after.total_size
+            metrics["snapshot_count"] = after.snapshots_count
+            self._remember(repository, after)
+        else:
+            # From prune's own "total prune:" and "remaining:" lines. A prune that
+            # forgot nothing prints neither, so the last known size stands rather
+            # than the dashboard dropping to zero.
+            known = self._state.repository(repository.slug).size_bytes
+            reclaimed = result.bytes_removed
+            size_after = result.bytes_remaining or known
+            size_before = size_after + reclaimed
+            metrics["snapshot_count"] = result.kept
+            self._remember_partial(repository, size_after, result.kept)
+
+        metrics.update(
+            repo_size_before=size_before,
+            repo_size_after=size_after,
+            bytes_reclaimed=reclaimed,
+        )
+        about = "" if exact else " (from prune's own output)"
         self._emit(
             f"reclaimed {_human_bytes(reclaimed)} "
-            f"({_human_bytes(before.total_size)} -> {_human_bytes(after.total_size)})"
+            f"({_human_bytes(size_before)} -> {_human_bytes(size_after)}){about}"
         )
-        return {
-            "snapshots_removed": result.removed,
-            "snapshots_kept": result.kept,
-            "snapshot_count": after.snapshots_count,
-            "repo_size_before": before.total_size,
-            "repo_size_after": after.total_size,
-            "bytes_reclaimed": reclaimed,
-            "pruned": result.pruned,
-            "blobs_removed": result.blobs_removed,
-            "blobs_repacked": result.blobs_repacked,
-            "packs_removed": result.packs_removed,
-            "prune_summary": result.summary,
-        }
 
-    async def _run_check(self, restic: Restic, repository: RepositoryConfig) -> dict[str, Any]:
-        await restic.check()
+    async def _run_check(
+        self, restic: Restic, repository: RepositoryConfig, metrics: dict[str, Any]
+    ) -> None:
+        subset = self._check_subset(repository)
+        metrics["read_data_subset"] = subset or "structure only"
+        try:
+            result = await restic.check(subset)
+        except CheckError as exc:
+            metrics.update(_check_metrics(exc.result))
+            raise
+        metrics.update(_check_metrics(result))
+        self._advance_check_subset(repository, subset)
+
+        # Unlike prune, check keeps its trailing stats call: it is not the phase
+        # that fights the consumer for the lock, and the snapshot count and size
+        # it returns are what the dashboard shows between prune runs.
         stats = await restic.stats()
         self._remember(repository, stats)
-        return {
-            "read_data_subset": self._settings.check.read_data_subset or "structure only",
-            "snapshot_count": stats.snapshots_count,
-            "repo_size_after": stats.total_size,
-        }
+        metrics["snapshot_count"] = stats.snapshots_count
+        metrics["repo_size_after"] = stats.total_size
+
+    def _check_subset(self, repository: RepositoryConfig) -> str:
+        """The read scope for this run, rotated if it is an ``n/t`` slice."""
+        configured = self._settings.check.read_data_subset
+        parsed = parse_subset_slice(configured)
+        if parsed is None or not self._settings.check.rotate_subset:
+            return configured
+        _, parts = parsed
+        index = self._state.repository(repository.slug).next_check_slice
+        return f"{(index - 1) % parts + 1}/{parts}"
+
+    def _advance_check_subset(self, repository: RepositoryConfig, subset: str) -> None:
+        """Move to the next slice, but only once this one has actually been read."""
+        parsed = parse_subset_slice(subset)
+        if parsed is None or not self._settings.check.rotate_subset:
+            return
+        index, parts = parsed
+        self._state.set_check_slice(repository.slug, index % parts + 1)
 
     async def unlock(self, repository: str | None = None, *, remove_all: bool = False) -> None:
         """Remove stale repository locks. Manual action only, never scheduled."""
@@ -282,6 +348,26 @@ class JobRunner:
             ),
         )
 
+    def _remember_partial(
+        self, repository: RepositoryConfig, size_bytes: int, snapshot_count: int
+    ) -> None:
+        """Update what prune's own output can tell us, keeping the rest.
+
+        Without a ``stats`` call there is no blob count or uncompressed size to
+        report, and stale figures are more useful to a dashboard than zeroes.
+        """
+        previous = self._state.repository(repository.slug)
+        self._state.set_repository(
+            repository.slug,
+            RepositorySnapshot(
+                checked_at=datetime.now(UTC),
+                size_bytes=size_bytes,
+                uncompressed_bytes=previous.uncompressed_bytes,
+                blob_count=previous.blob_count,
+                snapshot_count=snapshot_count,
+            ),
+        )
+
     def _emit(self, line: str) -> None:
         _LOGGER.debug("restic: %s", line)
         self._log_lines.append(line)
@@ -296,6 +382,14 @@ class JobRunner:
         self._state.update(run)
         self._current = None
 
+    def _body(self, run: RunRecord) -> str:
+        mode = self._settings.healthchecks_body
+        if mode == "none":
+            return ""
+        if mode == "log":
+            return "\n".join(self._log_lines)
+        return summary_body(run)
+
     async def _report(
         self,
         ping_url: str,
@@ -306,7 +400,7 @@ class JobRunner:
     ) -> None:
         if not ping_url:
             return
-        body = "\n".join(self._log_lines)
+        body = self._body(run)
         rid = _ping_rid(run.id)
         if ok:
             await self._healthchecks.success(ping_url, rid=rid, body=body)
@@ -322,6 +416,90 @@ class JobRunner:
             await self._on_change()
         except Exception:  # publishing must never break a run
             _LOGGER.exception("state change callback failed")
+
+
+def _failure_detail(exc: ResticError) -> str:
+    """The failure text for the history, with a check's findings hoisted up front."""
+    text = str(exc)
+    if not isinstance(exc, CheckError) or not exc.result.findings:
+        return text
+    head, _, rest = text.partition("\n")
+    findings = [str(finding) for finding in exc.result.findings[:MAX_FINDINGS]]
+    block = "\n".join([exc.result.headline(), *findings])
+    return "\n".join(part for part in (head, block, rest) if part)
+
+
+def _check_metrics(result: CheckResult) -> dict[str, Any]:
+    """The reportable part of a check, ids and counts only."""
+    metrics: dict[str, Any] = {
+        "findings": [str(finding) for finding in result.findings[:MAX_FINDINGS]],
+        "finding_count": len(result.findings),
+        "findings_headline": result.headline(),
+    }
+    if result.packs_total:
+        metrics["packs_read"] = result.packs_read
+        metrics["packs_total"] = result.packs_total
+    return metrics
+
+
+def summary_body(run: RunRecord) -> str:
+    """A compact report of one run, for the healthchecks.io ping body.
+
+    Built exclusively from this program's own values: the repository label the
+    user chose, counts, sizes, and the error line this program formats. restic's
+    own output is never included, because its forget listing names every host,
+    tag and absolute path in the repository.
+    """
+    headline = f"{run.job} on {run.repository}: {run.status}"
+    if run.dry_run:
+        headline += " (dry run)"
+    if run.duration_seconds is not None:
+        headline += f" in {run.duration_seconds:.1f}s"
+    lines = [headline]
+
+    metrics = run.metrics
+    if run.job == "prune":
+        if "snapshots_removed" in metrics:
+            lines.append(
+                f"snapshots: removed {metrics['snapshots_removed']}, "
+                f"kept {metrics['snapshots_kept']}"
+            )
+        if metrics.get("pruned"):
+            lines.append(
+                f"prune: {metrics['blobs_removed']} blobs removed, "
+                f"{metrics['blobs_repacked']} repacked, "
+                f"{metrics['packs_removed']} packs deleted"
+            )
+        elif "pruned" in metrics:
+            lines.append("prune: skipped, nothing was forgotten")
+        if "bytes_reclaimed" in metrics:
+            lines.append(
+                f"reclaimed {_human_bytes(metrics['bytes_reclaimed'])} "
+                f"({_human_bytes(metrics['repo_size_before'])} -> "
+                f"{_human_bytes(metrics['repo_size_after'])})"
+            )
+    else:
+        if metrics.get("read_data_subset"):
+            verified = f"verified: {metrics['read_data_subset']}"
+            if metrics.get("packs_total"):
+                verified += f" ({metrics['packs_read']} of {metrics['packs_total']} packs read)"
+            lines.append(verified)
+        if "snapshot_count" in metrics:
+            lines.append(f"snapshots: {metrics['snapshot_count']}")
+        # Object ids, never restic's error lines: "pack 6dcad00d1e missing"
+        # starts the actual work, where "check failed" only starts an ssh session.
+        if metrics.get("findings_headline"):
+            lines.append(metrics["findings_headline"])
+        lines += list(metrics.get("findings", []))
+        hidden = int(metrics.get("finding_count", 0)) - len(metrics.get("findings", []))
+        if hidden > 0:
+            lines.append(f"... and {hidden} more")
+
+    if run.error:
+        # Only the first line: everything this program formats itself, never the
+        # restic output that may follow it.
+        lines += ["", run.error.strip().splitlines()[0]]
+    return "\n".join(lines)
 
 
 def _ping_rid(run_id: str) -> str:

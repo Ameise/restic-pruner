@@ -63,7 +63,7 @@ def _with_prune_url(settings: Settings, url: str) -> Settings:
 
 
 async def test_prune_removes_snapshots_and_reclaims_space(
-    restic_repo: Settings, pings: tuple[PingLog, str]
+    restic_repo: Settings, pings: tuple[PingLog, str], tmp_path: Path
 ) -> None:
     ping_log, ping_url = pings
     settings = _with_prune_url(restic_repo, ping_url)
@@ -87,8 +87,15 @@ async def test_prune_removes_snapshots_and_reclaims_space(
     # begin and conclusion, in that order, correlated by rid.
     assert ping_log.paths == ["/hc/start", "/hc"]
     assert ping_log.rids[0] == ping_log.rids[1]
-    assert "forget:" in ping_log.bodies[1]
-    assert "reclaimed" in ping_log.bodies[1]
+
+    body = ping_log.bodies[1]
+    assert "prune on main: success" in body
+    assert "snapshots: removed 2, kept 1" in body
+    assert "reclaimed" in body
+    # restic lists the absolute path of everything it backed up. None of that
+    # may reach healthchecks.io, and the body must stay small.
+    assert str(tmp_path) not in body
+    assert len(body) < 400, f"ping body was {len(body)} bytes"
 
 
 async def test_a_second_prune_skips_the_prune_phase(restic_repo: Settings) -> None:
@@ -124,7 +131,7 @@ async def test_dry_run_changes_nothing(restic_repo: Settings, pings: tuple[PingL
     assert run.status is RunStatus.SUCCESS, run.error
     assert run.dry_run is True
     assert run.metrics["snapshots_removed"] == 2, "a dry run still reports what it would do"
-    assert run.metrics["bytes_reclaimed"] == 0
+    assert run.metrics["bytes_reclaimed"] > 0, "including how much it would have reclaimed"
     assert snapshot_count(settings, "main") == 3, "but the repository is untouched"
     assert ping_log.paths == ["/hc/start", "/hc"]
 
@@ -164,7 +171,8 @@ async def test_run_history_and_logs_are_persisted(restic_repo: Settings) -> None
     assert reloaded.repository("main").snapshot_count == 1
     log = reloaded.read_log(run.id)
     assert log is not None
-    assert "$ restic forget --prune" in log
+    # The whole command line, so the job history says what actually ran.
+    assert "$ restic --retry-lock 1m forget --prune" in log
 
 
 async def test_a_second_job_is_refused_while_one_runs(restic_repo: Settings) -> None:
@@ -269,3 +277,73 @@ async def test_each_repository_can_have_its_own_healthchecks_url(
         await runner.run("prune")
 
     assert ping_log.paths == ["/hc-vps/start", "/hc-vps", "/hc-nas/start", "/hc-nas"]
+
+
+async def test_check_pings_its_own_healthchecks_url(
+    restic_repo: Settings, pings: tuple[PingLog, str]
+) -> None:
+    """check is the only job that would notice corruption; it needs its own check."""
+    ping_log, ping_url = pings
+    settings = dataclasses.replace(
+        restic_repo,
+        check=dataclasses.replace(
+            restic_repo.check, healthchecks_url=ping_url, read_data_subset="1/2"
+        ),
+    )
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(settings, session)
+        run = (await runner.run("check"))[0]
+
+    assert run.status is RunStatus.SUCCESS, run.error
+    assert ping_log.paths == ["/hc/start", "/hc"]
+    body = ping_log.bodies[1]
+    assert "check on main: success" in body
+    assert "verified: 1/2" in body
+    assert run.metrics["read_data_subset"] == "1/2"
+
+
+async def test_the_check_slice_advances_between_runs(restic_repo: Settings) -> None:
+    settings = dataclasses.replace(
+        restic_repo,
+        check=dataclasses.replace(restic_repo.check, read_data_subset="1/3", rotate_subset=True),
+    )
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(settings, session)
+        first = (await runner.run("check"))[0]
+        second = (await runner.run("check"))[0]
+
+    assert first.metrics["read_data_subset"] == "1/3"
+    assert second.metrics["read_data_subset"] == "2/3", "each run reads a different part"
+
+    reloaded = StateStore(settings.data_dir)
+    reloaded.load()
+    assert reloaded.repository("main").next_check_slice == 3, "and it survives a restart"
+
+
+async def test_a_prune_reports_sizes_without_calling_stats(restic_repo: Settings) -> None:
+    """§7b: the figures come out of prune's own output, not a second repo open."""
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(restic_repo, session)
+        run = (await runner.run("prune"))[0]
+
+    assert run.status is RunStatus.SUCCESS, run.error
+    assert run.metrics["exact_sizes"] is False
+    assert run.metrics["bytes_reclaimed"] > 0
+    assert run.metrics["repo_size_after"] > 0
+    assert run.metrics["snapshot_count"] == 1
+    log = runner.log_for(run.id) or ""
+    assert "$ restic --retry-lock 1m stats" not in log, "no stats call in the locked window"
+
+
+async def test_a_prune_that_forgets_nothing_keeps_the_known_size(restic_repo: Settings) -> None:
+    """restic prints no size lines when it skips the prune phase."""
+    async with aiohttp.ClientSession() as session:
+        runner = await _runner(restic_repo, session)
+        first = (await runner.run("prune"))[0]
+        second = (await runner.run("prune"))[0]
+
+    assert second.metrics["pruned"] is False
+    assert second.metrics["bytes_reclaimed"] == 0
+    assert second.metrics["repo_size_after"] == first.metrics["repo_size_after"], (
+        "the last known size stands rather than dropping to zero"
+    )

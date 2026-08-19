@@ -280,3 +280,53 @@ def test_malformed_repositories_json_is_reported(tmp_path: Path) -> None:
 
 def test_timezone_falls_back_to_utc(settings: Settings) -> None:
     assert str(dataclasses.replace(settings, timezone="Mars/Olympus").tzinfo()) == "UTC"
+
+
+def test_new_options_round_trip_through_the_supervisor_shape() -> None:
+    settings = settings_from_options(
+        {
+            "repository": "/srv/repo",
+            "password": "x",
+            "healthchecks_body": "LOG",
+            "lock_hostname": False,
+            "prune": {"exact_reclaimed": True},
+            "check": {"read_data_subset": " 4/13 ", "rotate_subset": False},
+        },
+        {},
+    )
+    settings.validate()
+    assert settings.healthchecks_body == "log"
+    assert settings.lock_hostname is False
+    assert settings.prune.exact_reclaimed is True
+    assert settings.check.read_data_subset == "4/13"
+    assert settings.check.rotate_subset is False
+
+
+def test_new_options_round_trip_through_env(tmp_path: Path) -> None:
+    settings = load_settings(
+        tmp_path / "missing.json",
+        {
+            "RESTIC_PRUNER_REPOSITORY": "/srv/repo",
+            "RESTIC_PRUNER_PASSWORD": "x",
+            "RESTIC_PRUNER_HEALTHCHECKS_BODY": "none",
+            "RESTIC_PRUNER_LOCK_HOSTNAME": "false",
+            "RESTIC_PRUNER_PRUNE_EXACT_RECLAIMED": "true",
+            "RESTIC_PRUNER_CHECK_READ_DATA_SUBSET": "2/7",
+            "RESTIC_PRUNER_CHECK_ROTATE_SUBSET": "false",
+        },
+    )
+    assert settings.healthchecks_body == "none"
+    assert settings.lock_hostname is False
+    assert settings.prune.exact_reclaimed is True
+    assert settings.check.read_data_subset == "2/7"
+    assert settings.check.rotate_subset is False
+
+
+def test_defaults_start_five_past_the_hour(settings: Settings) -> None:
+    """A run that starts at :05 and takes minutes never meets a :15 backup."""
+    defaults = settings_from_options({"repository": "/srv/repo", "password": "x"}, {})
+    assert defaults.prune.schedule.split()[0] == "5"
+    assert defaults.check.schedule.split()[0] == "5"
+    assert defaults.check.read_data_subset == "1/4", "rotating, not a fixed sample"
+    assert defaults.check.rotate_subset is True
+    assert defaults.prune.exact_reclaimed is False, "no second stats call by default"

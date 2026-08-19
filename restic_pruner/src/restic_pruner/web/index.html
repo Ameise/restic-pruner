@@ -254,7 +254,7 @@ function repositoryCard(repository, running) {
         <h4>Prune</h4>
         <div class="row"><span>Last</span><span>${prune.last_run ? when(prune.last_run.finished_at || prune.last_run.started_at) : '–'}</span></div>
         <div class="row"><span>Removed</span><span>${metrics.snapshots_removed ?? '–'}</span></div>
-        <div class="row"><span>Freed</span><span>${bytes(metrics.bytes_reclaimed)}</span></div>
+        <div class="row"><span>Freed</span><span>${bytes(metrics.bytes_reclaimed)}${metrics.exact_sizes === false ? ' <span class="muted">approx.</span>' : ''}</span></div>
       </div>
       <div>
         <h4>Check ${pill(check.last_status)}</h4>
@@ -366,7 +366,9 @@ async function refreshHistory() {
       ? `<span class="muted">${escapeHtml(run.error.split('\n')[0]).slice(0, 80)}</span>`
       : run.job === 'prune' && run.metrics.bytes_reclaimed !== undefined
         ? `${run.metrics.snapshots_removed} removed · ${bytes(run.metrics.bytes_reclaimed)} freed`
-        : '';
+        : run.job === 'check' && run.metrics.read_data_subset
+          ? `${escapeHtml(String(run.metrics.read_data_subset))}${run.metrics.snapshot_count !== undefined ? ` · ${run.metrics.snapshot_count} snapshots` : ''}`
+          : '';
     return `<tr data-run-id="${run.id}">
       <td>${run.job}${run.dry_run ? ' <span class="muted">(dry)</span>' : ''}</td>
       <td>${escapeHtml(run.repository)}</td>
