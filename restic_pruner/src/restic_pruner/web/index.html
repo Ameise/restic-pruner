@@ -102,6 +102,7 @@
   <h1>Restic Pruner</h1>
   <span id="global-status" class="pill never">loading</span>
   <span class="spacer" style="flex:1"></span>
+  <span class="target" id="version"></span>
   <span class="target" id="timezone"></span>
 </header>
 
@@ -320,6 +321,9 @@ async function refreshStatusOnce() {
   $('global-status').textContent = running
     ? `running ${status.current_run.job} on ${status.current_run.repository}`
     : 'idle';
+  // Shown so "which version is actually running" is answerable from the page
+  // itself, rather than from the add-on log.
+  $('version').textContent = status.version ? `v${status.version}` : '';
   $('timezone').textContent = status.timezone;
 
   $('prune-schedule').textContent = status.jobs.prune.enabled ? status.jobs.prune.schedule : 'disabled';

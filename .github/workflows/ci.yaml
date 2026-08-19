@@ -75,6 +75,9 @@ jobs:
       - name: Check that requirements.txt matches pyproject.toml
         run: python3 scripts/check_requirements.py
 
+      - name: Check that the version agrees everywhere
+        run: python3 scripts/check_versions.py
+
   build:
     name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest

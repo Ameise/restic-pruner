@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.2
+
+The web UI could keep showing the previous version's page after an add-on
+update. It was served without a `Cache-Control` header, and a browser given only
+`Last-Modified` may apply heuristic freshness and serve its cached copy without
+revalidating -- so the panel showed the old UI while the new code ran underneath
+it, with no sign anything was wrong.
+
+- The page is now served `Cache-Control: no-cache`, so it revalidates every time.
+  Static assets are versioned instead, so they stay cacheable.
+- The header shows the running version, so what you are looking at is answerable
+  from the page rather than from the add-on log.
+- **The reported version was wrong.** `__version__` had said `0.1.0` since the
+  first release, so the add-on log's startup line, `/api/health`, `/api/status`
+  and the Home Assistant device `sw_version` all reported 0.1.0 through 0.2.0 and
+  0.3.x. Anyone checking "which version is running" got a misleading answer.
+  `scripts/check_versions.py` now fails CI whenever the three places that carry
+  the version disagree.
+
+If you are on 0.3.0 or 0.3.1 and the panel looks like an older release, a hard
+reload (Ctrl/Cmd+Shift+R) fixes it once; this release stops it recurring.
+
 ## 0.3.1
 
 The repack job shipped with only one of prune's two buttons, so the only way to

@@ -1,5 +1,7 @@
 """Scheduled restic maintenance for Home Assistant and plain Docker."""
 
-__version__ = "0.1.0"
+#: Kept in step with restic_pruner/config.yaml and pyproject.toml by
+#: scripts/check_versions.py, which CI runs on every push.
+__version__ = "0.3.2"
 
 __all__ = ["__version__"]
