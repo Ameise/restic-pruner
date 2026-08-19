@@ -2,6 +2,9 @@
 # The default is the multi-arch tag, so a plain `docker build` outside Home
 # Assistant still resolves to the host's architecture.
 ARG BUILD_FROM=ghcr.io/home-assistant/base-python:3.13-alpine3.22
+# DL3006: the image is tagged -- hadolint just cannot see through the ARG. Both
+# the default above and the per-architecture values in build.yaml pin a tag.
+# hadolint ignore=DL3006
 FROM ${BUILD_FROM}
 
 # BUILD_ARCH is the Supervisor's naming (aarch64/amd64). TARGETARCH is supplied
