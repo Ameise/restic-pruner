@@ -18,7 +18,7 @@ from .config import JOB_NAMES, JobName, Settings
 from .healthchecks import HealthchecksClient
 from .jobs import JobBusyError, JobDisabledError, JobRunner, UnknownRepositoryError
 from .publish import HassStatePublisher, MqttPublisher
-from .restic import ResticError
+from .restic import ResticError, uts_namespace_available
 from .scheduler import Scheduler
 from .state import RepositorySnapshot, StateStore, Trigger
 from .supervisor import SupervisorClient
@@ -182,6 +182,17 @@ class Application:
         A repository that is unreachable at startup is logged and skipped; its
         scheduled jobs still run, because the backend may simply be asleep.
         """
+        if self._settings.lock_hostname:
+            # Probed here rather than mid-run, so the answer is in the log from
+            # the start and not discovered while a job is holding the lock.
+            if await uts_namespace_available():
+                _LOGGER.info("Jobs will name themselves in the repository lock")
+            else:
+                _LOGGER.info(
+                    "Jobs cannot name themselves in the repository lock on this host; "
+                    "it will show the container hostname instead"
+                )
+
         logged_version = False
         for repository in self._settings.repositories:
             restic = runner.restic_for(repository)

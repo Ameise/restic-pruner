@@ -7,16 +7,17 @@ entities.
 
 It also runs as a plain Docker container if you don't use Home Assistant.
 
-Both jobs are infrequent and long-running, and `prune` holds an exclusive lock on the
-repository while it works, so they are normally scheduled separately from the backups
-themselves.
+Both jobs are infrequent, long-running, and hold an exclusive lock on the repository
+while they work, so they are normally scheduled around the backups themselves.
 
 - **Two scheduled jobs.** `prune` (`forget --prune`) and `check` (integrity
   verification), each on its own cron schedule.
 - **Many repositories, one schedule.** They are maintained one after another, never in
   parallel. A failure on one does not stop the rest.
 - **healthchecks.io reporting.** `/start` when a run begins, success or the restic exit
-  code when it ends, with the tail of the log as the request body.
+  code when it ends, with a short summary as the request body. restic's own output is not
+  sent, because its snapshot listing contains host names, tags and the absolute paths of
+  everything backed up.
 - **Home Assistant entities.** Every repository becomes its own device with last run,
   status, duration, snapshots removed, space reclaimed and repository size, plus buttons
   to run it now.
@@ -43,7 +44,13 @@ themselves.
        value: "..."
    prune:
      healthchecks_url: "https://hc-ping.com/<your-check-uuid>"
+   check:
+     healthchecks_url: "https://hc-ping.com/<a-second-check-uuid>"
    ```
+
+   Give `check` its own healthchecks URL. It is the only job that would notice
+   repository corruption, and one check covering both cannot express "prune is fine,
+   check has been dead for a month".
 
 3. **Start it with `prune.dry_run: true` first.** Open the web UI, press **Dry run**,
    and read the log. When it says what you expect, set `dry_run: false`.
@@ -77,15 +84,40 @@ retention:                  # shared defaults
   keep_monthly: 6
 ```
 
+## Schedules
+
+Both jobs are configured, not built in, and either can be turned off:
+
+| Job | Option | Default | |
+| --- | --- | --- | --- |
+| prune | `prune.schedule` | `5 3 * * 0` | Sundays 03:05 |
+| check | `check.schedule` | `5 5 * * 3` | Wednesdays 05:05 |
+
+Standard five-field cron, in the timezone Home Assistant gives the add-on. Set
+`enabled: false` on either job to stop it running at all. Missed runs are not caught up.
+
+The minute is `5` rather than `0` deliberately: both jobs take an exclusive lock, and a
+job that starts at `:05` and finishes within ten minutes never collides with a producer
+backing up on the quarter hour.
+
 ## Interaction with backups
 
-`prune` holds an exclusive lock on the repository for as long as it runs. Any restic
-operation that starts during that window fails with exit code 11 unless it is willing to
-wait, so backups running against the same repository need `--retry-lock`:
+**Both** jobs hold an exclusive lock on the repository for as long as they run. Any
+restic operation that starts during that window fails with exit code 11 unless it is
+willing to wait, so backups running against the same repository need `--retry-lock`:
 
 ```bash
 restic backup ... --retry-lock 1h
 ```
+
+Each job renames itself so the lock says which one is holding it:
+
+```
+repository is already locked exclusively by PID 142 on restic-pruner-check by root
+```
+
+That needs no extra container privileges. Where the kernel forbids it, the add-on logs
+the fact once and the lock shows the container hostname instead.
 
 This add-on applies a retention policy. If a policy is also applied elsewhere against the
 same repository, the two will disagree and each will remove snapshots the other keeps —
@@ -114,9 +146,9 @@ services:
       RESTIC_PRUNER_KEEP_DAILY: "14"
       RESTIC_PRUNER_KEEP_WEEKLY: "8"
       RESTIC_PRUNER_KEEP_MONTHLY: "6"
-      RESTIC_PRUNER_PRUNE_SCHEDULE: "0 3 * * 0"
+      RESTIC_PRUNER_PRUNE_SCHEDULE: "5 3 * * 0"
       RESTIC_PRUNER_PRUNE_HEALTHCHECKS_URL: https://hc-ping.com/<uuid>
-      RESTIC_PRUNER_CHECK_SCHEDULE: "0 5 * * 3"
+      RESTIC_PRUNER_CHECK_SCHEDULE: "5 5 * * 3"
       RESTIC_PRUNER_CHECK_HEALTHCHECKS_URL: https://hc-ping.com/<uuid>
       B2_ACCOUNT_ID: "..."
       B2_ACCOUNT_KEY: "..."
@@ -133,7 +165,7 @@ Do not expose that port to the internet — it can trigger destructive operation
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/health` | Liveness (also the add-on watchdog probe) |
+| `GET` | `/api/health` | Liveness (also the container HEALTHCHECK probe) |
 | `GET` | `/api/status` | Full status document: jobs, schedules, repositories, last runs |
 | `GET` | `/api/runs?job=&repository=&limit=` | Run history |
 | `GET` | `/api/runs/{id}` | One run |

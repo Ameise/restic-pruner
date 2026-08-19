@@ -9,9 +9,9 @@ Assistant.
 Two things follow from how restic works, and both concern whatever else uses the same
 repository:
 
-1. **Concurrent operations need `--retry-lock`.** `prune` holds an exclusive lock for the
-   duration of the run. Anything else touching the repository during that window fails
-   with exit code 11 unless it waits:
+1. **Concurrent operations need `--retry-lock`.** Both jobs hold an exclusive lock for
+   the duration of the run. Anything else touching the repository during that window
+   fails with exit code 11 unless it waits:
 
    ```bash
    restic backup ... --retry-lock 1h
@@ -127,12 +127,15 @@ of them.
 ```yaml
 prune:
   enabled: true
-  schedule: "0 3 * * 0"          # 03:00 every Sunday, in your Home Assistant timezone
+  schedule: "5 3 * * 0"          # 03:05 every Sunday, in your Home Assistant timezone
   healthchecks_url: "https://hc-ping.com/<uuid>"
   dry_run: false
   max_unused: unlimited
   max_repack_size: ""
+  exact_reclaimed: false
 ```
+
+The default minute is `5`, not `0`, on purpose — see [Scheduling](#scheduling).
 
 `max_unused: unlimited` is the default. It tells prune to delete only pack
 files that are *entirely* unused, and never to repack partially-used ones. Repacking
@@ -141,24 +144,59 @@ part of a prune on a remote backend. The trade-off is that some dead data remain
 partially-used packs. Set a percentage (`5%`) to reclaim it, and add `max_repack_size` (e.g. `2G`) to
 bound how much data a single run moves.
 
+`exact_reclaimed` measures the freed bytes with a `restic stats --mode raw-data` call
+before and immediately after the prune. It is exact, and it is not free: each call
+re-opens the repository and re-reads every index over the network, *inside the exclusive
+lock*. On a small repository the trailing call alone can cost more than every deletion
+phase put together. Left off, the figures come from prune's own `total prune:` and
+`remaining:` lines instead, which are close enough for a dashboard, and the lock is
+released that much sooner. The UI marks derived figures as approximate.
+
 ### `check`
 
 ```yaml
 check:
   enabled: true
-  schedule: "0 5 * * 3"          # 05:00 every Wednesday
+  schedule: "5 5 * * 3"          # 05:05 every Wednesday
   healthchecks_url: "https://hc-ping.com/<uuid>"
-  read_data_subset: "5%"
+  read_data_subset: "1/4"
+  rotate_subset: true
   with_cache: true
 ```
 
-`restic check` on its own verifies structure: indexes, trees, and that every referenced
-pack exists. `read_data_subset` additionally re-reads and re-hashes that share of actual
-pack data, which is what catches silent corruption at the storage layer. The subset is
-chosen at random each run, so repeated runs re-read some packs and leave others
-untouched; a higher percentage verifies more per run at proportionally more cost.
+**Give `check` its own healthchecks URL.** It is the only thing that would notice
+repository corruption, and a monitoring job nobody monitors is the weakest link in the
+design. One check covering both jobs cannot express "prune is fine, check has been dead
+for a month".
 
-Unlike `prune`, `check` takes a non-exclusive lock, so backups can run alongside it.
+`restic check` on its own verifies *structure*: it downloads every snapshot, index and
+tree object and confirms that every pack the index references exists. It does not
+download pack contents. `read_data_subset` additionally re-reads and re-hashes some of
+the actual pack data, which is what catches silent corruption at the storage layer.
+
+Three forms are accepted:
+
+| Value | Meaning |
+| --- | --- |
+| `""` | structure only, no pack data read |
+| `"1/4"` | the n-th of four equal parts — **the default** |
+| `"5%"`, `"500M"` | a random sample of that share or size |
+
+With `rotate_subset: true` (the default) an `n/t` value advances every run and wraps, so
+four weekly runs verify *all* of the pack data and the next four verify it again. A fixed
+`5%` re-reads the same arbitrary 5% forever and leaves the other 95% unverified
+indefinitely. A run that fails does not advance the counter, so the same part is retried.
+The counter lives in the add-on's persistent data and survives restarts and updates.
+
+Pick `t` against measured runtime, not against egress fear. The binding constraint is
+the lock, not the bill: `check` takes an **exclusive** lock for its whole run, so anything
+else backing up to the repository is blocked until it finishes. Size a slice so a run
+stays well inside that producer's `--retry-lock` budget. `restic stats --mode raw-data`
+gives the repository size to reason from; on a few-gigabyte repository `t=4` is a few
+hundred megabytes per run.
+
+Each run logs the exact command line it ran, so the scope that was actually verified is
+visible in the job history rather than inferred.
 
 ### Other options
 
@@ -167,14 +205,26 @@ Unlike `prune`, `check` takes a non-exclusive lock, so backups can run alongside
 | `name` | `main` | Label for the single repository, used in its entity ids |
 | `retry_lock` | `15m` | How long a job waits for a lock held by another process |
 | `healthchecks_base_url` | `https://hc-ping.com` | Only used when you enter bare UUIDs |
+| `healthchecks_body` | `summary` | `summary`, `log` or `none` — see below |
+| `lock_hostname` | `true` | Name the job in restic's repository lock — see below |
 | `history_limit` | `50` | Runs and run logs kept |
 | `mqtt` | auto | Leave empty; the broker is discovered via the Supervisor |
 | `log_level` | `info` | `trace`, `debug`, `info`, `warning`, `error` |
 
 ## Scheduling
 
-Schedules are standard five-field cron expressions evaluated in the timezone Home
-Assistant gives the add-on, including across daylight saving changes.
+Both jobs are configured, never built in. `prune.schedule` and `check.schedule` are
+standard five-field cron expressions evaluated in the timezone Home Assistant gives the
+add-on, including across daylight saving changes, and either job can be switched off
+entirely with `enabled: false`. Defaults: prune `5 3 * * 0` (Sundays 03:05), check
+`5 5 * * 3` (Wednesdays 05:05).
+
+**Why five past.** Both jobs take an exclusive lock for their whole run. Anything else
+backing up to the same repository is blocked meanwhile, and gives up once its own
+`--retry-lock` window expires. A producer that backs up on the hour and every quarter
+past has a fifteen-minute rhythm: a job starting at `:00` collides with that backup
+immediately, while one starting at `:05` and finishing in under ten minutes never meets
+it at all. Match the offset to whatever else uses your repository.
 
 Runs missed while the add-on was stopped are **not** caught up. A prune that was due
 during a reboot waits for the next slot.
@@ -193,9 +243,57 @@ restic forget --prune --keep-hourly 48 ... --max-unused unlimited
 
 `forget --prune` performs both in one invocation. It takes the repository lock once, and
 it skips the prune phase entirely when the retention policy removed no snapshots —
-so a weekly prune that has nothing to do costs almost nothing. Immediately before and
-after, `restic stats --mode raw-data` measures the repository, and the difference is the
-"space reclaimed" you see in the UI and the entities.
+so a weekly prune that has nothing to do costs almost nothing. The "space reclaimed"
+figure in the UI and the entities comes from prune's own `total prune:` and `remaining:`
+output; set `exact_reclaimed: true` to measure it with `restic stats` instead.
+
+### How long the lock is held
+
+Most of a prune's wall time is not deletion. On a small repository over a remote backend
+the deleting phases can account for a quarter of the run, with the rest going on opening
+the repository and loading indexes and snapshots. Two things shorten the window:
+
+- **Prune more often.** Cost scales with what has accumulated since the last run. A
+  producer taking 96 snapshots a day leaves ~700 for a weekly prune to forget and ~96 for
+  a daily one, and the daily runs hold the lock for less time *in total per week*. If a
+  weekly prune's long tail is costing you a backup run, move `prune.schedule` to daily.
+- **Leave `exact_reclaimed` off**, which is the default. It removes a full repository
+  open and index load from inside the lock.
+
+### The restic cache
+
+restic caches index and snapshot metadata under `$RESTIC_CACHE_DIR`, which this add-on
+points at `/data/cache` — the add-on's persistent volume. It therefore survives restarts,
+add-on updates and Home Assistant reboots, and is excluded from Home Assistant backups.
+
+Expect less from it than a backup client does. Prune *rebuilds* every index file, so the
+following run's indexes are cache misses no matter what; snapshots created since the last
+run are new objects too. What stays warm is the metadata of the snapshots that survived
+retention.
+
+## Sharing the repository with a backup client
+
+Both jobs take an **exclusive** lock for their whole run, so a client backing up to the
+same repository is blocked until the job finishes and needs `--retry-lock` set to cover
+it. Two things make that easy to reason about from the other side.
+
+**The lock names the job.** restic writes whatever the operating system reports as the
+hostname into its lock file, which in a container is the container — so by default
+`prune` and `check` are indistinguishable from outside, and a lock seen on a Wednesday
+tells you nothing about which job is holding it. With `lock_hostname: true` (the default)
+each job runs in a throwaway namespace with its own hostname, and the lock reads:
+
+```
+repository is already locked exclusively by PID 142 on restic-pruner-check by root
+```
+
+This needs no added privileges — the add-on stays unprivileged — because the job first
+enters an unprivileged *user* namespace and only then renames itself. A kernel that
+forbids unprivileged user namespaces refuses this; the add-on says so once in its log at
+startup and carries on with the container hostname.
+
+**Both jobs ping healthchecks.io.** Give `prune` and `check` separate checks and the
+timeline answers "which job held the lock at 03:00 on Wednesday" in seconds.
 
 ## healthchecks.io
 
@@ -209,9 +307,50 @@ Each ping pair is:
 - `POST <url>/start` when the run begins
 - `POST <url>` on success, or `POST <url>/<restic exit code>` on failure
 
-Both carry a `rid` so healthchecks pairs them into one execution, and the failure ping
-carries the tail of the restic log as the body, so the notification distinguishes a lock
-from a wrong password or genuine corruption.
+Both carry a `rid` so healthchecks pairs them into one execution.
+
+### What goes in the ping body
+
+`healthchecks_body` controls this, and defaults to `summary`:
+
+```
+prune on vps: success in 10.1s
+snapshots: removed 1, kept 61
+prune: 6 blobs removed, 380 repacked, 1 packs deleted
+reclaimed 157.9 KiB (13.4 MiB -> 13.3 MiB)
+```
+
+A few hundred bytes, assembled from this add-on's own counters. On failure it ends with the
+one error line the add-on formats, such as
+`restic prune failed with exit code 11: the repository is already locked`, which is enough
+to tell a lock from a wrong password.
+
+restic's output is deliberately absent. `restic forget` prints a table of every snapshot it
+kept and removed, including host names, tags and the absolute path of every directory in
+the repository — easily 10 KB per run, sent to a third party, describing the layout of the
+machine being backed up.
+
+Set `healthchecks_body: log` to send the run log instead (capped, and it will contain those
+paths), or `none` to send no body at all. The add-on stores the full log locally in every
+case; the web UI is where to read it.
+
+For a check run, the body names what was verified and — when something is wrong — the
+objects that are broken:
+
+```
+check on vps: failed in 44.1s
+verified: 4/13
+2 packs missing, 1 tree damaged
+pack 6dcad00d1e missing
+pack 91b0f2c4aa missing
+tree 4f77aa1c02 damaged
+
+restic check failed with exit code 1
+```
+
+Only object ids are forwarded, never restic's error lines: those quote the file names
+inside the damaged trees. `pack 6dcad00d1e missing` starts the actual work, where "check
+failed" only starts an ssh session.
 
 Suggested check settings: period **1 week**, grace **6 hours** for prune. A weekly prune
 that takes hours is normal.

@@ -51,19 +51,46 @@ configuration:
       Runs restic forget --prune on a cron schedule, for every repository in
       turn. Leave max_unused at "unlimited" to delete only fully unused pack
       files, which keeps network transfer close to zero. The healthchecks URL
-      here is the fallback for repositories that do not set their own.
+      here is the fallback for repositories that do not set their own. Start the
+      schedule a few minutes past the hour so a run finishes before a producer's
+      next backup wants the lock. exact_reclaimed measures the freed bytes with
+      an extra restic stats call before and after: exact, but it re-reads every
+      index over the network while holding the exclusive lock, so it is off by
+      default and the figures come from prune's own output instead.
   check:
     name: Check job
     description: >-
-      Runs restic check to verify repository integrity. read_data_subset also
-      re-reads a random share of the actual pack data, for example 5%. Leave it
-      empty to verify structure only.
+      Runs restic check to verify repository integrity, and pings its own
+      healthchecks URL - set one, or nothing tells you when the only job that
+      would notice corruption stops running. read_data_subset also re-reads pack
+      data: "1/4" reads the n-th of four equal parts and, with rotate_subset on,
+      advances every run, so all of the data is verified over four runs. A fixed
+      percentage such as "5%" re-reads the same arbitrary sample forever. Leave
+      it empty to verify structure only. Size the slice so a run stays well
+      inside the lock-wait budget of whatever else uses the repository.
   retry_lock:
     name: Lock retry window
     description: >-
       How long restic waits for a repository lock held by another process, for
       example 15m. Prune takes an exclusive lock, so anything else using the
       same repository needs --retry-lock too.
+  healthchecks_body:
+    name: healthchecks ping body
+    description: >-
+      How much detail to send to healthchecks.io. "summary" sends only counts,
+      sizes and, on failure, one error line - restic's own output is never
+      included, because its snapshot listing contains host names, tags and the
+      full paths of everything backed up. "log" sends the run log instead, and
+      "none" sends no body at all. The add-on keeps the full log locally either
+      way.
+  lock_hostname:
+    name: Name the job in the repository lock
+    description: >-
+      Give each job its own hostname, so restic's lock reads
+      "restic-pruner-prune" or "restic-pruner-check" rather than the container
+      name and both jobs are told apart from the other side of the repository.
+      Needs no extra privileges: the job runs in a throwaway user namespace.
+      Where the kernel forbids that, the add-on logs it once and carries on.
   healthchecks_base_url:
     name: healthchecks base URL
     description: >-

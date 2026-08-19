@@ -21,10 +21,14 @@ ENV PYTHONPATH=/opt/restic-pruner/src \
 # restic ships official static binaries; we pin the version and verify the
 # published SHA256 rather than trusting whatever the distro happens to carry.
 #
-# DL3018: bzip2 and ca-certificates are deliberately unpinned. Pinning an apk
-# version that a future base image no longer carries breaks the build outright,
-# and neither package affects what ends up in the image -- restic's integrity is
-# guaranteed by the checksum below, not by the tool that unpacks it.
+# DL3018: the apk packages are deliberately unpinned. Pinning an apk version that
+# a future base image no longer carries breaks the build outright, and none of them
+# affects what ends up in the image -- restic's integrity is guaranteed by the
+# checksum below, not by the tool that unpacks it.
+#
+# util-linux-misc supplies `unshare`, which each job uses to give restic its own
+# UTS namespace so the repository lock names the job. busybox's applet does not
+# carry --map-root-user, so the real one is required.
 # hadolint ignore=DL3018
 RUN set -eux; \
     arch="${BUILD_ARCH:-${TARGETARCH:-}}"; \
@@ -39,14 +43,15 @@ RUN set -eux; \
         ;; \
       *) echo "unsupported or undetected architecture: '${arch}'" >&2; exit 1 ;; \
     esac; \
-    apk add --no-cache bzip2 ca-certificates; \
+    apk add --no-cache bzip2 ca-certificates util-linux-misc; \
     wget -q -O /tmp/restic.bz2 \
       "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_${RESTIC_ARCH}.bz2"; \
     echo "${RESTIC_SHA256}  /tmp/restic.bz2" | sha256sum -c -; \
     bunzip2 -c /tmp/restic.bz2 > /usr/local/bin/restic; \
     chmod 0755 /usr/local/bin/restic; \
     rm -f /tmp/restic.bz2; \
-    restic version
+    restic version; \
+    unshare --version
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --root-user-action=ignore -r /tmp/requirements.txt \
@@ -54,6 +59,11 @@ RUN pip install --no-cache-dir --root-user-action=ignore -r /tmp/requirements.tx
 
 COPY src /opt/restic-pruner/src
 COPY rootfs /
+
+# Replaces the deprecated `watchdog:` option in config.yaml. The route is exempt
+# from the ingress guard precisely so a loopback probe like this one can reach it.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8099/api/health || exit 1
 
 LABEL \
   io.hass.name="Restic Pruner" \
