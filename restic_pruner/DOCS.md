@@ -452,6 +452,12 @@ The add-on adds a sidebar panel showing all three schedules, one card per reposi
 with its size, snapshot count, unused space and last run of each job, a live log while a
 job runs, and the last 25 runs. Click any run in the history to read its full log.
 
+Each repository card carries one status badge for the repository -- the worst of its three
+jobs, so a failed check shows even when prune is fine -- and one per job beside it. The
+history table can be narrowed to a single job with the **Job** dropdown, and the Started,
+Duration and Size columns sort on click: once for ascending, again for descending, a third
+time back to newest-first.
+
 **Prune all now**, **Check all now** and **Repack all now** work through every
 repository; the buttons on a repository card act on that one alone. The **(dry run)**
 buttons pass `--dry-run`: they report exactly what would be removed or rewritten and

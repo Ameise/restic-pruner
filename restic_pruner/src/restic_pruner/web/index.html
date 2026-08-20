@@ -7,7 +7,7 @@
 <!-- The version this page was built from. Compared at runtime against what the
      add-on reports, so a page served from a stale cache can notice and say so.
      Kept in step with the other version strings by scripts/check_versions.py. -->
-<meta name="build-version" content="0.4.1">
+<meta name="build-version" content="0.4.2">
 <style>
   :root {
     color-scheme: light dark;
@@ -93,8 +93,30 @@
   .chart .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); margin-top: 4px; }
   .chart .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
   .chart .span { font-size: 11px; color: var(--muted); }
-  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 18px; }
-  .split h4 { margin: 10px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  /* Name, overall status and target in one frame, so it is clear the pill up here
+     describes the repository and not the first job listed under it. */
+  .identity {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 12px;
+  }
+  .identity .card-head { margin-bottom: 4px; }
+  .jobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 12px; }
+  /* Each job is its own block: stacked on a narrow card they would otherwise read
+     as more of the rows above them. The left edge is the job's colour, the same one
+     the history tags and the duration chart use. */
+  .job {
+    background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--border);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  .job.prune { border-left-color: var(--job-prune); }
+  .job.check { border-left-color: var(--job-check); }
+  .job.repack { border-left-color: var(--job-repack); }
+  .job h4 {
+    margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 600;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .job .row { font-size: 13px; }
   .pill {
     display: inline-flex; align-items: center;
     padding: 2px 9px; border-radius: 999px;
@@ -139,6 +161,24 @@
   table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 560px; }
   th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px;
        text-transform: uppercase; letter-spacing: .04em; padding-bottom: 8px; }
+  /* A button rather than a click handler on the th, so the sort is reachable by
+     keyboard and shows a focus ring without inventing either. */
+  button.sort {
+    font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
+    background: none; border: 0; padding: 0; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  button.sort:hover { color: var(--accent); }
+  button.sort .arrow { font-size: 10px; opacity: .45; }
+  th[aria-sort] button.sort { color: var(--text); }
+  th[aria-sort] button.sort .arrow { opacity: 1; color: var(--accent); }
+  select {
+    font: inherit; font-size: 13px;
+    padding: 5px 8px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    cursor: pointer;
+  }
+  select:hover { border-color: var(--accent); }
   td { padding: 7px 8px 7px 0; border-top: 1px solid var(--border); }
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
@@ -204,10 +244,26 @@
   </section>
 
   <section class="card full">
-    <h2>History</h2>
+    <div class="card-head">
+      <h2 style="margin:0">History</h2>
+      <span class="spacer"></span>
+      <label class="muted" for="history-job" style="font-size:12px">Job</label>
+      <select id="history-job">
+        <option value="">All jobs</option>
+        <option value="prune">prune</option>
+        <option value="check">check</option>
+        <option value="repack">repack</option>
+      </select>
+    </div>
     <div class="table-wrap">
     <table>
-      <thead><tr><th>Job</th><th>Repository</th><th>Status</th><th>Started</th><th>Duration</th><th>Size</th><th>Trigger</th><th>Detail</th></tr></thead>
+      <thead><tr>
+        <th>Job</th><th>Repository</th><th>Status</th>
+        <th data-sort="started"><button class="sort" type="button">Started<span class="arrow">↕</span></button></th>
+        <th data-sort="duration"><button class="sort" type="button">Duration<span class="arrow">↕</span></button></th>
+        <th data-sort="size"><button class="sort" type="button">Size<span class="arrow">↕</span></button></th>
+        <th>Trigger</th><th>Detail</th>
+      </tr></thead>
       <tbody id="history"><tr><td colspan="8" class="muted">No runs yet.</td></tr></tbody>
     </table>
     </div>
@@ -231,6 +287,17 @@ let followingRunId = null;
 let pinnedRunId = null;
 let repositoriesSignature = null;
 let historySignature = null;
+//: The runs the table is currently showing, kept so a sort or a re-sort repaints
+//: without another round trip.
+let historyRuns = [];
+//: '' for every job. Changing it refetches, because the API filters server-side
+//: and 25 rows of one job beats whatever survives hiding rows of 25 mixed ones.
+let historyJob = '';
+//: Wikipedia's three states: null is the order the API served, newest first.
+let historySort = { column: null, ascending: false };
+//: The filter the painted table was fetched under, to tell a moved history from a
+//: changed dropdown.
+let historyFilterShown = null;
 // The poll interval and the post-click refresh can otherwise overlap, and two
 // concurrent log pumps interleave their appends.
 let refreshing = false;
@@ -291,6 +358,13 @@ const JOBS = ['prune', 'check', 'repack'];
 const jobTag = (job) =>
   JOBS.includes(job) ? `<span class="tag ${job}">${job}</span>` : escapeHtml(job);
 
+// The card's own pill answers "is anything wrong with this repository", so the
+// worst of the three jobs wins. A failure has to survive the two other jobs
+// succeeding after it.
+const STATUS_ORDER = ['failed', 'running', 'success', 'skipped', 'never'];
+const overallStatus = (jobs) =>
+  STATUS_ORDER.find((status) => JOBS.some((job) => jobs[job].last_status === status)) || 'never';
+
 // "5%" and "4/13" are both opaque on their own: one samples afresh every run and
 // may never reach some packs, the other covers everything in t runs.
 function readScope(value) {
@@ -343,28 +417,30 @@ function repositoryCard(repository, running) {
   const unused = latestUnused(prune.last_run, repack.last_run);
   const disabled = running ? 'disabled' : '';
   return `<section class="card" data-repository="${escapeHtml(repository.slug)}">
-    <div class="card-head">
-      <h3>${escapeHtml(repository.name)}</h3>
-      <span class="spacer"></span>
-      ${pill(prune.last_status)}
+    <div class="identity">
+      <div class="card-head">
+        <h3>${escapeHtml(repository.name)}</h3>
+        <span class="spacer"></span>
+        ${pill(overallStatus(repository.jobs))}
+      </div>
+      <div class="target">${escapeHtml(repository.target)}</div>
     </div>
-    <div class="target" style="margin-bottom:10px">${escapeHtml(repository.target)}</div>
     <div class="row"><span>Size</span><span>${bytes(repository.size_bytes)}</span></div>
     <div class="row"><span>Snapshots</span><span>${repository.snapshot_count || '–'}</span></div>
     <div class="row"><span>Retention</span><span class="target">${retentionSummary(repository.retention)}</span></div>
-    <div class="split">
-      <div>
-        <h4>Prune</h4>
+    <div class="jobs">
+      <div class="job prune">
+        <h4>Prune ${pill(prune.last_status)}</h4>
         <div class="row"><span>Last</span><span>${prune.last_run ? when(prune.last_run.finished_at || prune.last_run.started_at) : '–'}</span></div>
         <div class="row"><span>Removed</span><span>${metrics.snapshots_removed ?? '–'}</span></div>
         <div class="row"><span>Freed</span><span>${bytes(metrics.bytes_reclaimed)}${metrics.exact_sizes === false ? ' <span class="muted">approx.</span>' : ''}</span></div>
       </div>
-      <div>
+      <div class="job check">
         <h4>Check ${pill(check.last_status)}</h4>
         <div class="row"><span>Last</span><span>${check.last_run ? when(check.last_run.finished_at || check.last_run.started_at) : '–'}</span></div>
         <div class="row"><span>Verified</span><span>${check.last_run && check.last_run.metrics && check.last_run.metrics.read_data_subset ? escapeHtml(readScope(check.last_run.metrics.read_data_subset)) : '–'}</span></div>
       </div>
-      <div>
+      <div class="job repack">
         <h4>Repack ${pill(repack.last_status)}</h4>
         <div class="row"><span>Last</span><span>${repack.last_run ? when(repack.last_run.finished_at || repack.last_run.started_at) : '–'}</span></div>
         <div class="row"><span>Unused</span><span>${unused === undefined ? '–' : bytes(unused)}</span></div>
@@ -773,22 +849,75 @@ async function refreshTrends() {
     chart('Run duration', seriesBy(points, 'job', 'duration_seconds', jobColor), TIME_AXIS);
 }
 
-async function refreshHistory() {
-  let data;
-  try { data = await request('runs?limit=25'); } catch (error) { return; }
-  const signature = JSON.stringify(data.runs);
-  if (signature === historySignature) return;
-  historySignature = signature;
-  // Only when the history actually moved: the poll loop runs every few seconds
-  // and the whole series is far too much to re-pull that often.
-  await refreshTrends();
+// What each sortable column sorts on. A run with nothing to compare -- an
+// unfinished one has no duration, a check never reports a size -- has no place in
+// the order and goes to the bottom whichever way the arrow points.
+const SORT_KEYS = {
+  started: (run) => Date.parse(run.started_at),
+  duration: (run) => run.duration_seconds,
+  size: (run) => run.metrics.repo_size_after,
+};
 
+function sortedHistory() {
+  const key = SORT_KEYS[historySort.column];
+  if (!key) return historyRuns;
+  const direction = historySort.ascending ? 1 : -1;
+  return [...historyRuns].sort((a, b) => {
+    const left = key(a), right = key(b);
+    const missingLeft = left === null || left === undefined || Number.isNaN(left);
+    const missingRight = right === null || right === undefined || Number.isNaN(right);
+    if (missingLeft || missingRight) return missingLeft - missingRight;
+    return (left - right) * direction;
+  });
+}
+
+function paintSortHeaders() {
+  document.querySelectorAll('th[data-sort]').forEach((th) => {
+    const active = th.dataset.sort === historySort.column;
+    const arrow = th.querySelector('.arrow');
+    if (active) {
+      th.setAttribute('aria-sort', historySort.ascending ? 'ascending' : 'descending');
+      arrow.textContent = historySort.ascending ? '▲' : '▼';
+    } else {
+      th.removeAttribute('aria-sort');
+      arrow.textContent = '↕';
+    }
+  });
+}
+
+async function refreshHistory() {
+  const filter = historyJob;
+  let data;
+  try {
+    data = await request(filter ? `runs?limit=25&job=${filter}` : 'runs?limit=25');
+  } catch (error) { return; }
+  // The dropdown may have moved on while this was in flight; its own fetch is the
+  // one that should paint.
+  if (historyJob !== filter) return;
+  // The filter is part of the signature: the same runs under a different filter
+  // are a different table.
+  const signature = JSON.stringify([filter, data.runs]);
+  if (signature === historySignature) return;
+  const filterChanged = historyFilterShown !== null && historyFilterShown !== filter;
+  historySignature = signature;
+  historyFilterShown = filter;
+  historyRuns = data.runs;
+  renderHistory();
+  // Only when the history itself moved, and not merely because the dropdown did:
+  // the charts are unfiltered, the poll loop runs every few seconds, and the whole
+  // series is far too much to re-pull that often.
+  if (!filterChanged) await refreshTrends();
+}
+
+function renderHistory() {
+  paintSortHeaders();
   const body = $('history');
-  if (!data.runs.length) {
-    body.innerHTML = '<tr><td colspan="8" class="muted">No runs yet.</td></tr>';
+  if (!historyRuns.length) {
+    const nothing = historyJob ? `No ${historyJob} runs yet.` : 'No runs yet.';
+    body.innerHTML = `<tr><td colspan="8" class="muted">${nothing}</td></tr>`;
     return;
   }
-  body.innerHTML = data.runs.map((run) => {
+  body.innerHTML = sortedHistory().map((run) => {
     const detail = run.error
       ? `<span class="muted">${escapeHtml(run.error.split('\n')[0]).slice(0, 80)}</span>`
       : (run.job === 'prune' || run.job === 'repack') && run.metrics.bytes_reclaimed !== undefined
@@ -872,6 +1001,23 @@ document.addEventListener('click', async (event) => {
 $('charts').addEventListener('pointermove', onChartHover);
 $('charts').addEventListener('pointerleave', () => { hideChartTip(hoveredChart); hoveredChart = null; });
 $('charts').addEventListener('pointercancel', () => { hideChartTip(hoveredChart); hoveredChart = null; });
+
+$('history-job').addEventListener('change', (event) => {
+  historyJob = event.target.value;
+  refreshHistory();
+});
+
+// Three states, in Wikipedia's order: the served order, then ascending, then
+// descending, then back. One column sorts at a time.
+document.querySelectorAll('th[data-sort] button.sort').forEach((button) => {
+  button.addEventListener('click', () => {
+    const column = button.parentElement.dataset.sort;
+    if (historySort.column !== column) historySort = { column, ascending: true };
+    else if (historySort.ascending) historySort = { column, ascending: false };
+    else historySort = { column: null, ascending: false };
+    renderHistory();
+  });
+});
 
 refreshStatus();
 setInterval(refreshStatus, 5000);

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.2
+
+### A history table you can interrogate
+
+The last 25 runs were a flat list with three job types interleaved, and the numeric
+columns were inert text.
+
+- A **Job** dropdown above the table narrows it to prune, check or repack. It refetches
+  rather than hiding rows, so filtering gives you 25 runs *of that job* instead of
+  however few of them the last 25 mixed runs happened to contain.
+- **Started**, **Duration** and **Size** sort on click, in Wikipedia's three states:
+  the order as served, then ascending, then descending, then back. One column at a time.
+  Runs with nothing to compare -- an unfinished run has no duration, a check reports no
+  size -- sit at the bottom whichever way the arrow points.
+
+Sorting reorders the runs that are loaded: the table you see is the table you sort.
+
+### Repository cards that read as cards
+
+The pill beside the repository name was prune's status wearing the repository's hat --
+which is why prune was the one job without a tag of its own, and why a green pill could
+sit above a failed check.
+
+- The name, the target and the pill now share a **frame**, and the pill is the worst
+  status across all three jobs. A failed check turns the card's badge red no matter how
+  well prune went.
+- **Prune, check and repack are three panels**, each with its own tag -- prune included --
+  and a left edge in that job's colour, the same one the history tags and the duration
+  chart use. Stacked on a narrow screen they no longer read as more of the rows above
+  them.
+
 ## 0.4.1
 
 ### Charts you can read numbers off
