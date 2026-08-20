@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.3
+
+### A log scale, per chart
+
+A linear axis flattens anything whose interesting movement is small next to its largest
+value. Run duration is the clearest case: prune takes about a minute and repack over an
+hour, so on one linear axis the prune line lies along the floor and "is prune getting
+slower" cannot be answered.
+
+Each chart now has its own **log** button. Per chart, because the size charts are usually
+fine linear and the duration chart usually is not, and the choice is remembered across
+reloads.
+
+- Size axes climb in powers of two -- `128 MiB`, `512 MiB`, `1 GiB` -- and duration axes
+  in the steps a clock has: `1m`, `5m`, `15m`, `1h`. Over a range too short to hold a
+  rung, the round numbers of the linear axis are kept and merely placed logarithmically.
+- A log axis has no room for zero, and unused space legitimately reaches it. Those runs
+  are **left out rather than flattened onto the bottom tick**, the line breaks where they
+  were, and the caption counts them: *16 at 0 B not shown*. A chart with nothing above
+  zero says so instead of drawing an empty plot.
+
 ## 0.4.2
 
 ### A history table you can interrogate

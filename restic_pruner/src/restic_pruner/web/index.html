@@ -7,7 +7,7 @@
 <!-- The version this page was built from. Compared at runtime against what the
      add-on reports, so a page served from a stale cache can notice and say so.
      Kept in step with the other version strings by scripts/check_versions.py. -->
-<meta name="build-version" content="0.4.2">
+<meta name="build-version" content="0.4.3">
 <style>
   :root {
     color-scheme: light dark;
@@ -90,6 +90,16 @@
   .chart .tip.below { transform: none; }
   .chart .tip strong { display: block; font-size: 13px; }
   .chart .tip .who { display: block; color: var(--muted); }
+  .chart h4 button.scale {
+    font: inherit; font-size: 10px; letter-spacing: .03em;
+    margin-left: 8px; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--border); background: none; color: var(--muted);
+    cursor: pointer; text-transform: none;
+  }
+  .chart h4 button.scale:hover { border-color: var(--accent); color: var(--accent); }
+  .chart h4 button.scale[aria-pressed="true"] {
+    border-color: var(--accent); background: var(--accent); color: #fff;
+  }
   .chart .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); margin-top: 4px; }
   .chart .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
   .chart .span { font-size: 11px; color: var(--muted); }
@@ -602,11 +612,22 @@ const BYTES_AXIS = {
   format: bytes,
   unit: (high) => { let u = 1; while (high / u >= 1024 && u < 1024 ** 4) u *= 1024; return u; },
   tick: (value, unit) => inUnit(value, unit, ' ' + BYTE_UNITS.find(([size]) => size === unit)[1]),
+  // A log axis climbs by 1024 rather than by 10, so its rungs are the units people
+  // already read sizes in -- 4 MiB, 64 MiB, 1 GiB -- rather than 1-2-5 decades
+  // that would label a size chart in powers of a thousand it never uses. Each rung
+  // is labelled in its own unit, since the axis crosses several.
+  ladder: { base: 1024, multiples: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512] },
+  logLabel: (value) => BYTES_AXIS.tick(value, BYTES_AXIS.unit(value)),
 };
 const TIME_AXIS = {
   format: duration,
   unit: (high) => (high >= 7200 ? 3600 : high >= 120 ? 60 : 1),
   tick: (value, unit) => inUnit(value, unit, unit === 3600 ? 'h' : unit === 60 ? 'm' : 's'),
+  // Durations are not decimal: the rungs worth labelling are the ones a clock has,
+  // so the ladder is spelled out rather than generated from a base.
+  ladder: [1, 2, 5, 15, 30, 60, 300, 900, 1800, 3600, 7200, 21600, 43200, 86400, 604800],
+  logLabel: (value) =>
+    value < 60 ? inUnit(value, 1, 's') : value < 3600 ? inUnit(value, 60, 'm') : inUnit(value, 3600, 'h'),
 };
 
 function niceStep(raw) {
@@ -629,6 +650,45 @@ function niceTicks(low, high, unit) {
   return ticks;
 }
 
+// A log axis is laid out on its own ladder of rungs -- powers of two for sizes, the
+// ones a clock has for durations -- extended to the rungs either side of the data so
+// a line never runs along the frame. Rungs are labelled each in its own unit, since
+// an axis crossing decades genuinely wants mixed ones: 30s, 5m, 1h.
+function ladderRungs(low, high, axis) {
+  if (Array.isArray(axis.ladder)) return axis.ladder;
+  const { base, multiples } = axis.ladder;
+  const rungs = [];
+  // Start a full step below the data, so a rung at or under `low` always exists.
+  let magnitude = base ** (Math.floor(Math.log(low) / Math.log(base)) - 1);
+  while (magnitude <= high * base && rungs.length < 128) {
+    for (const multiple of multiples) rungs.push(multiple * magnitude);
+    magnitude *= base;
+  }
+  return rungs;
+}
+
+function logTicks(low, high, axis, unit) {
+  const rungs = ladderRungs(low, high, axis);
+  if (rungs.filter((value) => value >= low && value <= high).length < 2) {
+    // The data spans less than one rung: the ladder would squeeze it into a sliver
+    // between two distant labels. Over so short a range a log axis is barely
+    // distinguishable from a linear one anyway, so borrow the linear axis's round
+    // numbers and merely place them logarithmically.
+    const ticks = niceTicks(low, high, unit).filter((value) => value > 0);
+    if (ticks.length >= 2) return { ticks, label: (value) => axis.tick(value, unit) };
+  }
+  let first = 0, last = rungs.length - 1;
+  for (let i = 0; i < rungs.length; i++) if (rungs[i] <= low) first = i;
+  for (let i = rungs.length - 1; i >= 0; i--) if (rungs[i] >= high) last = i;
+  let ticks = rungs.slice(first, Math.max(last, first + 1) + 1);
+  // Six labels is all the gutter can carry; drop every other rung until they fit,
+  // keeping the one that is the axis's top bound.
+  while (ticks.length > 6) {
+    ticks = ticks.filter((_, i) => i % 2 === 0 || i === ticks.length - 1);
+  }
+  return { ticks, label: axis.logLabel };
+}
+
 const shortDate = (ms) =>
   new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
@@ -637,14 +697,43 @@ const shortDate = (ms) =>
 // rather than re-deriving it.
 const chartModels = [];
 
-function lineChart(series, axis, title) {
+// The stretches of a series that a log axis can draw, split where a run at or below
+// zero had to be left out.
+function aboveZero(points) {
+  const segments = [];
+  let current = [];
+  for (const point of points) {
+    if (point.y > 0) {
+      current.push(point);
+    } else if (current.length) {
+      segments.push(current);
+      current = [];
+    }
+  }
+  if (current.length) segments.push(current);
+  return segments;
+}
+
+function lineChart(series, axis, title, log) {
   // A single point is a dot, not a trend: a series only counts once it has two.
-  const drawn = series.filter((s) => s.points.length > 1);
+  const full = series.filter((s) => s.points.length > 1);
+  // A log axis has no place for zero, and unused space legitimately reaches it.
+  // Those runs are left out rather than pressed onto the bottom tick, where a 0 B
+  // run would be indistinguishable from a 1 KiB one -- and the caption says how
+  // many went missing.
+  const dropped = log ? full.flatMap((s) => s.points).filter((p) => p.y <= 0).length : 0;
+  const drawn = (log
+    ? full
+      .map((s) => ({ ...s, points: s.points.filter((p) => p.y > 0), segments: aboveZero(s.points) }))
+      .filter((s) => s.points.length > 1)
+    : full.map((s) => ({ ...s, segments: [s.points] })));
   const all = drawn.flatMap((s) => s.points);
   if (all.length < 2) {
     // Still take a slot, so the data-chart index of every later chart is right.
     chartModels.push({ hits: [], format: axis.format, multi: false });
-    return '<p class="muted">Not enough points yet.</p>';
+    return log
+      ? '<p class="muted">Nothing above zero to plot on a log scale.</p>'
+      : '<p class="muted">Not enough points yet.</p>';
   }
 
   const xs = all.map((p) => p.x);
@@ -655,17 +744,24 @@ function lineChart(series, axis, title) {
   // but it must not be labelled with the padding invented to draw it.
   const flat = low === high;
   const unit = axis.unit(Math.max(Math.abs(low), Math.abs(high)));
-  const ticks = flat ? [low] : niceTicks(low, high, unit);
-  const y0 = flat ? low - 1 : ticks[0];
-  const y1 = flat ? high + 1 : ticks[ticks.length - 1];
+  const scale = flat || !log ? null : logTicks(low, high, axis, unit);
+  const ticks = flat ? [low] : log ? scale.ticks : niceTicks(low, high, unit);
+  const y0 = flat ? (log ? low / 2 : low - 1) : ticks[0];
+  const y1 = flat ? (log ? high * 2 : high + 1) : ticks[ticks.length - 1];
   const spanX = x1 - x0 || 1;
   const px = (x) => PLOT_L + ((x - x0) / spanX) * PLOT_W;
-  const py = (y) => PLOT_T + PLOT_H - ((y - y0) / (y1 - y0)) * PLOT_H;
+  // The only difference a log axis makes to the drawing: values are placed by
+  // their logarithm, so a tenfold rise is the same distance wherever it starts.
+  const place = log
+    ? (y) => (Math.log10(y) - Math.log10(y0)) / (Math.log10(y1) - Math.log10(y0))
+    : (y) => (y - y0) / (y1 - y0);
+  const py = (y) => PLOT_T + PLOT_H - place(y) * PLOT_H;
+  const label = (value) => (scale ? scale.label(value) : axis.tick(value, unit));
 
   const grid = ticks.map((value) => `
     <line x1="${PLOT_L}" y1="${py(value).toFixed(1)}" x2="${PLOT_L + PLOT_W}" y2="${py(value).toFixed(1)}"
           stroke="currentColor" stroke-width="0.5" opacity="${value === ticks[0] ? 0.25 : 0.12}"/>
-    <text class="tick" x="${PLOT_L - 6}" y="${(py(value) + 3.2).toFixed(1)}" text-anchor="end">${escapeHtml(axis.tick(value, unit))}</text>`
+    <text class="tick" x="${PLOT_L - 6}" y="${(py(value) + 3.2).toFixed(1)}" text-anchor="end">${escapeHtml(label(value))}</text>`
   ).join('');
 
   const hits = [];
@@ -676,20 +772,30 @@ function lineChart(series, axis, title) {
         hits.push(point);
         return point;
       });
-      const d = path.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+      // One polyline per run of consecutive drawn points. Off a log axis that is
+      // the whole series; on one, the line stops either side of a dropped zero
+      // rather than sailing over a value that is not there.
+      const strokes = s.segments
+        .filter((segment) => segment.length > 1)
+        .map((segment) => segment.map((p) => `${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(' '))
+        .map((points) => `<polyline fill="none" stroke="${s.color}" stroke-width="1.6"
+                stroke-linejoin="round" stroke-linecap="round" points="${points}"/>`)
+        .join('');
       const dots = path
         .map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="1.6" fill="${s.color}" opacity="0.5"/>`)
         .join('');
       const last = path[path.length - 1];
-      return `<polyline fill="none" stroke="${s.color}" stroke-width="1.6"
-                stroke-linejoin="round" stroke-linecap="round" points="${d}"/>
+      return `${strokes}
               ${dots}
               <circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="2.5" fill="${s.color}"/>`;
     })
     .join('');
 
   const range = flat ? `${axis.format(low)} throughout` : `${axis.format(low)} – ${axis.format(high)}`;
-  const summary = `${title}: ${range}, ${shortDate(x0)} to ${shortDate(x1)}`
+  const notes = (log ? ['log scale'] : [])
+    .concat(dropped ? [`${dropped} at ${axis.format(0)} not shown`] : []);
+  const caption = [range].concat(notes).join(' · ');
+  const summary = `${title}: ${caption}, ${shortDate(x0)} to ${shortDate(x1)}`
     + (drawn.length > 1 ? `, one line per ${drawn.map((s) => s.label).join(', ')}` : '');
 
   chartModels.push({ hits, format: axis.format, multi: drawn.length > 1 });
@@ -704,7 +810,7 @@ function lineChart(series, axis, title) {
     ${shortDate(x0) === shortDate(x1) ? '' : `<text class="tick" x="${PLOT_L + PLOT_W}" y="${CHART_H - 4}" text-anchor="end">${escapeHtml(shortDate(x1))}</text>`}
   </svg>
   <div class="tip" hidden aria-hidden="true"></div>
-  <div class="span">${escapeHtml(range)}</div>`;
+  <div class="span">${escapeHtml(caption)}</div>`;
 }
 
 function legend(series) {
@@ -715,11 +821,14 @@ function legend(series) {
     .join('')}</div>`;
 }
 
-function chart(title, series, axis) {
-  const body = lineChart(series, axis, title);
+function chart(key, title, series, axis) {
+  const log = !!logScale[key];
+  const body = lineChart(series, axis, title, log);
   const index = chartModels.length - 1;
+  const toggle = `<button class="scale" type="button" data-scale="${key}" aria-pressed="${log}"
+      title="Plot this chart on a logarithmic y axis">log</button>`;
   return `<div class="chart" data-chart="${index}">`
-    + `<h4>${escapeHtml(title)}</h4>${body}${legend(series)}</div>`;
+    + `<h4>${escapeHtml(title)}${toggle}</h4>${body}${legend(series)}</div>`;
 }
 
 function cssVar(name) {
@@ -829,24 +938,50 @@ function onChartHover(event) {
   tip.style.top = (above ? top - 10 : top + 10) + 'px';
 }
 
+//: Which charts are drawn on a log axis, one flag each. Remembered across reloads:
+//: someone who reads the duration chart in log scale reads it that way every time.
+const SCALE_KEY = 'restic-pruner.log-scale';
+const logScale = readLogScale();
+
+function readLogScale() {
+  try {
+    return JSON.parse(localStorage.getItem(SCALE_KEY)) || {};
+  } catch (error) {
+    // Storage can be denied outright inside an iframe. The toggles still work,
+    // they just start linear again next time.
+    return {};
+  }
+}
+
+function writeLogScale() {
+  try { localStorage.setItem(SCALE_KEY, JSON.stringify(logScale)); } catch (error) {}
+}
+
+//: The last points fetched, so flipping a scale repaints without a round trip.
+let trendPoints = [];
+
 async function refreshTrends() {
   let data;
   try { data = await request('trends'); } catch (error) { return; }
-  const points = data.points;
+  trendPoints = data.points;
+  renderTrends();
+}
+
+function renderTrends() {
   const el = $('charts');
   hideChartTip(hoveredChart);
   hoveredChart = null;
   chartModels.length = 0;
-  if (points.length < 2) {
+  if (trendPoints.length < 2) {
     el.innerHTML = '<p class="muted">Not enough finished runs yet.</p>';
     return;
   }
-  const repoColor = repositoryColors(points);
+  const repoColor = repositoryColors(trendPoints);
   const jobColor = (job) => cssVar('--job-' + job);
   el.innerHTML =
-    chart('Repository size', seriesBy(points, 'repository', 'repo_size_after', repoColor), BYTES_AXIS) +
-    chart('Unused space', seriesBy(points, 'repository', 'unused_bytes', repoColor), BYTES_AXIS) +
-    chart('Run duration', seriesBy(points, 'job', 'duration_seconds', jobColor), TIME_AXIS);
+    chart('size', 'Repository size', seriesBy(trendPoints, 'repository', 'repo_size_after', repoColor), BYTES_AXIS) +
+    chart('unused', 'Unused space', seriesBy(trendPoints, 'repository', 'unused_bytes', repoColor), BYTES_AXIS) +
+    chart('duration', 'Run duration', seriesBy(trendPoints, 'job', 'duration_seconds', jobColor), TIME_AXIS);
 }
 
 // What each sortable column sorts on. A run with nothing to compare -- an
@@ -998,6 +1133,14 @@ document.addEventListener('click', async (event) => {
 
 // Delegated, because refreshTrends rebuilds the charts whenever the history moves
 // and per-chart listeners would not survive it.
+$('charts').addEventListener('click', (event) => {
+  const button = event.target.closest('button.scale');
+  if (!button) return;
+  const key = button.dataset.scale;
+  logScale[key] = !logScale[key];
+  writeLogScale();
+  renderTrends();
+});
 $('charts').addEventListener('pointermove', onChartHover);
 $('charts').addEventListener('pointerleave', () => { hideChartTip(hoveredChart); hoveredChart = null; });
 $('charts').addEventListener('pointercancel', () => { hideChartTip(hoveredChart); hoveredChart = null; });

@@ -448,6 +448,11 @@ its own colour in the size charts. Each chart has a labelled axis, and pointing 
 curve reads out the nearest run: its exact value, which job or repository it belongs to,
 and when it finished.
 
+Each chart also has a **log** button that switches its y axis to a logarithmic one, which
+is what makes a minute-long prune readable on the same plot as an hour-long repack. The
+setting is remembered per chart. Runs measuring zero cannot be drawn on a log axis; they
+are left out and counted in the line under the chart.
+
 The add-on adds a sidebar panel showing all three schedules, one card per repository
 with its size, snapshot count, unused space and last run of each job, a live log while a
 job runs, and the last 25 runs. Click any run in the history to read its full log.

@@ -1,6 +1,6 @@
 ---
 name: Restic Pruner
-version: "0.4.2"
+version: "0.4.3"
 slug: restic_pruner
 description: >-
   Scheduled restic forget/prune and repository checks, reported to
