@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
 import pytest
@@ -13,7 +14,7 @@ from restic_pruner.config import Settings
 from restic_pruner.healthchecks import HealthchecksClient
 from restic_pruner.jobs import JobRunner
 from restic_pruner.scheduler import Scheduler
-from restic_pruner.state import StateStore
+from restic_pruner.state import RunRecord, RunStatus, StateStore, Trigger, new_run_id
 
 #: The bundled app under test, as aiohttp types it.
 Client = TestClient[web.Request, web.Application]
@@ -24,6 +25,7 @@ class Harness:
     client: Client
     runner: JobRunner
     session: aiohttp.ClientSession
+    state: StateStore
 
     async def close(self) -> None:
         await self.client.close()
@@ -39,16 +41,27 @@ async def _harness(settings: Settings) -> Harness:
     scheduler.prime()
     client = TestClient(TestServer(create_app(settings, state, runner, scheduler)))
     await client.start_server()
-    return Harness(client, runner, session)
+    return Harness(client, runner, session, state)
 
 
 @pytest.fixture
-async def client(local_settings: Settings) -> AsyncIterator[Client]:
+async def harness(local_settings: Settings) -> AsyncIterator[Harness]:
     harness = await _harness(local_settings)
     try:
-        yield harness.client
+        yield harness
     finally:
         await harness.close()
+
+
+@pytest.fixture
+def client(harness: Harness) -> Client:
+    return harness.client
+
+
+@pytest.fixture
+def state(harness: Harness) -> StateStore:
+    """The store the API is serving, so a test can seed history into it."""
+    return harness.state
 
 
 async def test_health(client: Client) -> None:
@@ -141,3 +154,82 @@ async def test_ingress_guard_blocks_direct_access(settings: Settings) -> None:
         assert (await harness.client.get("/api/health")).status == 200
     finally:
         await harness.close()
+
+
+async def test_trends_returns_plottable_points(client: Client) -> None:
+    payload = await (await client.get("/api/trends")).json()
+    assert "points" in payload
+    for point in payload["points"]:
+        assert set(point) == {
+            "finished_at",
+            "job",
+            "repository",
+            "duration_seconds",
+            "repo_size_after",
+            "unused_bytes",
+        }, "the chart payload stays narrow; /api/runs is where full metrics live"
+
+
+async def test_trends_omits_runs_that_cannot_be_plotted(client: Client, state: StateStore) -> None:
+    """A failed run's sizes describe a repository mid-operation."""
+    started = datetime.now(UTC)
+    state.add(
+        RunRecord(
+            id=new_run_id(),
+            job="prune",
+            repository="main",
+            status=RunStatus.SUCCESS,
+            trigger=Trigger.SCHEDULE,
+            started_at=started,
+            finished_at=started + timedelta(seconds=5),
+            metrics={"repo_size_after": 100, "unused_bytes": 10},
+        )
+    )
+    state.add(
+        RunRecord(
+            id=new_run_id(),
+            job="prune",
+            repository="main",
+            status=RunStatus.FAILED,
+            trigger=Trigger.SCHEDULE,
+            started_at=started,
+            finished_at=started + timedelta(seconds=1),
+            metrics={"repo_size_after": 999},
+        )
+    )
+    state.add(
+        RunRecord(
+            id=new_run_id(),
+            job="check",
+            repository="main",
+            status=RunStatus.RUNNING,
+            trigger=Trigger.MANUAL,
+            started_at=started,
+        )
+    )
+
+    points = (await (await client.get("/api/trends")).json())["points"]
+    sizes = [point["repo_size_after"] for point in points]
+    assert 100 in sizes
+    assert 999 not in sizes, "a failed run is not a data point"
+    assert all(point["finished_at"] for point in points)
+
+
+async def test_trends_are_oldest_first(client: Client, state: StateStore) -> None:
+    started = datetime.now(UTC)
+    for index in range(3):
+        state.add(
+            RunRecord(
+                id=new_run_id(),
+                job="prune",
+                repository="main",
+                status=RunStatus.SUCCESS,
+                trigger=Trigger.SCHEDULE,
+                started_at=started + timedelta(minutes=index),
+                finished_at=started + timedelta(minutes=index, seconds=5),
+                metrics={"repo_size_after": index},
+            )
+        )
+    points = (await (await client.get("/api/trends")).json())["points"]
+    stamps = [point["finished_at"] for point in points]
+    assert stamps == sorted(stamps), "a chart reads left to right"

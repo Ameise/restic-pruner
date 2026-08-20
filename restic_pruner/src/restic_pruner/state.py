@@ -1,9 +1,15 @@
 """Persistent run history.
 
 State lives in ``<data_dir>/state.json`` and is written atomically, so a power
-cut in the middle of a write cannot leave the add-on unable to start. Full run
-logs are kept as separate files under ``<data_dir>/logs`` and rotate together
-with the history.
+cut in the middle of a write cannot leave the add-on unable to start.
+
+Run records and their logs are kept for different lengths of time on purpose. A
+record is a few hundred bytes and is what the history table and the trend charts
+are drawn from, so it is worth keeping indefinitely; a log is up to
+:data:`~restic_pruner.jobs.LIVE_LOG_LINES` lines and is only of interest while
+something is being investigated. ``log_limit`` therefore bounds the logs under
+``<data_dir>/logs`` on its own, and ``history_limit`` may be zero for "keep every
+record".
 """
 
 from __future__ import annotations
@@ -114,10 +120,12 @@ class RepositorySnapshot:
 class StateStore:
     """Run history and repository facts, persisted as JSON."""
 
-    def __init__(self, data_dir: Path, history_limit: int = 50) -> None:
+    def __init__(self, data_dir: Path, history_limit: int = 0, log_limit: int = 25) -> None:
         self._path = data_dir / "state.json"
         self._log_dir = data_dir / "logs"
-        self._history_limit = max(1, history_limit)
+        #: Zero keeps every run record.
+        self._history_limit = max(0, history_limit)
+        self._log_limit = max(1, log_limit)
         self._runs: list[RunRecord] = []
         self._repositories: dict[str, RepositorySnapshot] = {}
 
@@ -247,8 +255,14 @@ class StateStore:
             return None
 
     def _trim(self) -> None:
-        del self._runs[self._history_limit :]
-        keep = {run.id for run in self._runs}
+        """Drop old records, and old logs sooner.
+
+        The two limits are independent: a record can outlive its log by years,
+        which is what makes an unbounded history affordable.
+        """
+        if self._history_limit:
+            del self._runs[self._history_limit :]
+        keep = {run.id for run in self._runs[: self._log_limit]}
         if not self._log_dir.is_dir():
             return
         for path in self._log_dir.glob("*.log"):

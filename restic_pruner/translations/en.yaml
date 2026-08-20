@@ -111,7 +111,16 @@ configuration:
       Point this at your own instance if you self-host healthchecks.
   history_limit:
     name: History limit
-    description: How many past runs and run logs to keep.
+    description: >-
+      How many past runs to keep in the history table and the trend charts.
+      Leave at 0 to keep all of them: a run record is a few hundred bytes, so
+      even years of daily runs stay small. This no longer controls the run logs.
+  log_limit:
+    name: Run logs kept
+    description: >-
+      How many full run logs to keep on disk. Logs are the part that takes real
+      space, so they are dropped long before the history is. An older run still
+      appears in the table with its counts; only its detailed log is gone.
   mqtt:
     name: MQTT
     description: >-

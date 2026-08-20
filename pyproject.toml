@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "restic-pruner"
-version = "0.3.3"
+version = "0.4.0"
 description = "Scheduled restic forget/prune/check with healthchecks.io reporting and Home Assistant integration"
 readme = "README.md"
 license = "Apache-2.0"

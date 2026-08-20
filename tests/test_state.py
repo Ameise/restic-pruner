@@ -45,7 +45,7 @@ def test_roundtrip(tmp_path: Path) -> None:
 
 
 def test_history_is_trimmed_and_logs_follow(tmp_path: Path) -> None:
-    store = StateStore(tmp_path, history_limit=3)
+    store = StateStore(tmp_path, history_limit=3, log_limit=3)
     store.load()
     ids = []
     for _ in range(5):
@@ -58,6 +58,35 @@ def test_history_is_trimmed_and_logs_follow(tmp_path: Path) -> None:
     assert store.read_log(ids[-1]) is not None
     assert store.read_log(ids[0]) is None, "logs for evicted runs should be deleted"
     assert len(list((tmp_path / "logs").glob("*.log"))) == 3
+
+
+def test_records_outlive_their_logs(tmp_path: Path) -> None:
+    """The point of the two limits: keep the overview, drop the bulk."""
+    store = StateStore(tmp_path, history_limit=0, log_limit=2)
+    store.load()
+    ids = []
+    for _ in range(6):
+        run = _run()
+        ids.append(run.id)
+        store.add(run)
+        store.write_log(run.id, ["a log line"])
+
+    assert len(store.runs()) == 6, "history_limit=0 keeps every record"
+    assert len(list((tmp_path / "logs").glob("*.log"))) == 2
+    assert store.read_log(ids[-1]) is not None, "the newest run keeps its log"
+    assert store.read_log(ids[0]) is None, "the oldest lost only its log"
+    assert store.get(ids[0]) is not None, "but its record is still there"
+
+
+def test_an_unlimited_history_survives_a_reload(tmp_path: Path) -> None:
+    store = StateStore(tmp_path, history_limit=0, log_limit=1)
+    store.load()
+    for _ in range(20):
+        store.add(_run())
+
+    reloaded = StateStore(tmp_path, history_limit=0, log_limit=1)
+    reloaded.load()
+    assert len(reloaded.runs()) == 20
 
 
 def test_interrupted_runs_are_marked_failed_on_load(tmp_path: Path) -> None:
