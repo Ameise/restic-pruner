@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.1
+
+### Charts you can read numbers off
+
+The trend charts drew the shape of things without ever saying how big they were: no
+axis, only a `4.8 GiB – 6.3 GiB` caption underneath, and no way to tie a wobble in the
+line to the run that caused it.
+
+- Every chart now has a **labelled y axis** with faint gridlines, rounded to whole units
+  -- `5 GiB`, `20m` -- and the first and last date under the plot.
+- **Pointing at a curve** reads out the nearest run: its exact value, the job or
+  repository it belongs to, and when it finished. It snaps to a single point rather than
+  lining the series up on a shared moment, because the three jobs finish at different
+  times and a shared column would compare runs that never happened together.
+- Where several repositories are configured, each gets **its own colour** in the size
+  charts. They were all drawn in the accent colour, which made the legend meaningless.
+
+The charts are drawn at a fixed aspect now, so their height follows the card width. That
+is what lets the axis labels be text inside the drawing without being stretched with it.
+
 ## 0.4.0
 
 ### Trends

@@ -443,7 +443,10 @@ you self-host.
 
 The panel also charts repository size, unused space and run duration over the whole
 retained history, under **Trends**. Duration is drawn one line per job, in the same
-colours the history table tags them with.
+colours the history table tags them with; where you run several repositories, each gets
+its own colour in the size charts. Each chart has a labelled axis, and pointing at the
+curve reads out the nearest run: its exact value, which job or repository it belongs to,
+and when it finished.
 
 The add-on adds a sidebar panel showing all three schedules, one card per repository
 with its size, snapshot count, unused space and last run of each job, a live log while a

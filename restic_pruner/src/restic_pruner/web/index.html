@@ -7,7 +7,7 @@
 <!-- The version this page was built from. Compared at runtime against what the
      add-on reports, so a page served from a stale cache can notice and say so.
      Kept in step with the other version strings by scripts/check_versions.py. -->
-<meta name="build-version" content="0.4.0">
+<meta name="build-version" content="0.4.1">
 <style>
   :root {
     color-scheme: light dark;
@@ -24,6 +24,11 @@
     --job-prune: #1e88e5;
     --job-check: #8e24aa;
     --job-repack: #ef6c00;
+    /* One colour per repository in the size charts. --accent is the first, so a
+       single-repository install looks exactly as it did. */
+    --series-2: #00897b;
+    --series-3: #d81b60;
+    --series-4: #7cb342;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
@@ -38,6 +43,9 @@
       --job-prune: #64b5f6;
       --job-check: #ce93d8;
       --job-repack: #ffb74d;
+      --series-2: #4db6ac;
+      --series-3: #f06292;
+      --series-4: #aed581;
     }
   }
   * { box-sizing: border-box; }
@@ -65,9 +73,23 @@
     padding: 10px 16px; text-align: center; font-size: 13px;
     background: var(--fail); color: #fff;
   }
-  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .chart { position: relative; }
   .chart h4 { margin: 0 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
-  .chart svg { width: 100%; height: 120px; display: block; overflow: visible; }
+  /* Height follows width: the drawing scales uniformly so the axis labels inside
+     it keep their shape. */
+  .chart svg { width: 100%; height: auto; display: block; touch-action: pan-y; }
+  .chart svg text.tick { font-size: 9.5px; fill: var(--muted); font-family: inherit; }
+  .chart .tip {
+    position: absolute; z-index: 5; pointer-events: none;
+    transform: translateY(-100%);
+    background: var(--card); border: 1px solid var(--border); border-radius: 7px;
+    padding: 5px 8px; font-size: 11.5px; line-height: 1.35; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0,0,0,.16); font-variant-numeric: tabular-nums;
+  }
+  .chart .tip.below { transform: none; }
+  .chart .tip strong { display: block; font-size: 13px; }
+  .chart .tip .who { display: block; color: var(--muted); }
   .chart .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); margin-top: 4px; }
   .chart .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
   .chart .span { font-size: 11px; color: var(--muted); }
@@ -471,14 +493,83 @@ function checkForStalePage(liveVersion) {
 // no build step and no dependencies, and a few polylines do not justify changing
 // that. Points are spaced by time, not by index, so a gap in the schedule shows
 // as a gap.
+//
+// Drawn with uniform scaling. The obvious trick for a responsive chart --
+// preserveAspectRatio="none" -- stretches the drawing to the card's width, and
+// would stretch the axis labels along with it, so the height follows the width
+// instead and every chart in a row ends up the same size anyway.
 
+// The viewBox is sized so that one unit is about one pixel at the width these
+// cards actually get, which keeps the label text at a sane size.
 const CHART_W = 320;
-const CHART_H = 120;
-const CHART_PAD = 4;
+const CHART_H = 140;
+const PLOT_L = 48;  // left gutter: y tick labels
+const PLOT_R = 8;
+const PLOT_T = 8;
+const PLOT_B = 18;  // bottom gutter: the first and last date
+const PLOT_W = CHART_W - PLOT_L - PLOT_R;
+const PLOT_H = CHART_H - PLOT_T - PLOT_B;
+const HOVER_RADIUS = 22;  // in viewBox units
 
-function lineChart(series, format) {
-  const all = series.flatMap((s) => s.points);
-  if (all.length < 2) return '<p class="muted">Not enough points yet.</p>';
+// Ticks have to be round in the unit the value is *printed* in: 2 GiB and 4 GiB,
+// not 2.1 GB, and 30m rather than 1800s. So each axis picks one unit for the whole
+// scale, steps in multiples of it, and labels every tick in it -- an axis reading
+// 0 B / 500.0 MiB / 1.5 GiB is three units for one column of numbers.
+const BYTE_UNITS = [[1024 ** 4, 'TiB'], [1024 ** 3, 'GiB'], [1024 ** 2, 'MiB'], [1024, 'KiB'], [1, 'B']];
+
+function inUnit(value, unit, name) {
+  const scaled = value / unit;
+  return (Number.isInteger(scaled) ? scaled : scaled.toFixed(1)) + name;
+}
+
+const BYTES_AXIS = {
+  format: bytes,
+  unit: (high) => { let u = 1; while (high / u >= 1024 && u < 1024 ** 4) u *= 1024; return u; },
+  tick: (value, unit) => inUnit(value, unit, ' ' + BYTE_UNITS.find(([size]) => size === unit)[1]),
+};
+const TIME_AXIS = {
+  format: duration,
+  unit: (high) => (high >= 7200 ? 3600 : high >= 120 ? 60 : 1),
+  tick: (value, unit) => inUnit(value, unit, unit === 3600 ? 'h' : unit === 60 ? 'm' : 's'),
+};
+
+function niceStep(raw) {
+  if (!(raw > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const scaled = raw / magnitude;
+  return (scaled > 5 ? 10 : scaled > 2 ? 5 : scaled > 1 ? 2 : 1) * magnitude;
+}
+
+// Round values covering [low, high], with the outermost two becoming the axis
+// bounds so a line never runs along the frame.
+function niceTicks(low, high, unit) {
+  const step = niceStep((high - low) / unit / 4) * unit;
+  const first = Math.floor(low / step) * step;
+  const ticks = [];
+  for (let value = first; value < high + step / 2 && ticks.length < 8; value += step) {
+    ticks.push(value);
+  }
+  ticks.push(ticks.length ? ticks[ticks.length - 1] + step : high);
+  return ticks;
+}
+
+const shortDate = (ms) =>
+  new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+// Every rendered chart keeps its hit points here, indexed by the data-chart
+// attribute on its element, so the hover handler can work off the drawn geometry
+// rather than re-deriving it.
+const chartModels = [];
+
+function lineChart(series, axis, title) {
+  // A single point is a dot, not a trend: a series only counts once it has two.
+  const drawn = series.filter((s) => s.points.length > 1);
+  const all = drawn.flatMap((s) => s.points);
+  if (all.length < 2) {
+    // Still take a slot, so the data-chart index of every later chart is right.
+    chartModels.push({ hits: [], format: axis.format, multi: false });
+    return '<p class="muted">Not enough points yet.</p>';
+  }
 
   const xs = all.map((p) => p.x);
   const ys = all.map((p) => p.y);
@@ -487,31 +578,57 @@ function lineChart(series, format) {
   // A series that never moves still deserves a line, drawn down the middle --
   // but it must not be labelled with the padding invented to draw it.
   const flat = low === high;
-  const y0 = flat ? low - 1 : low;
-  const y1 = flat ? high + 1 : high;
+  const unit = axis.unit(Math.max(Math.abs(low), Math.abs(high)));
+  const ticks = flat ? [low] : niceTicks(low, high, unit);
+  const y0 = flat ? low - 1 : ticks[0];
+  const y1 = flat ? high + 1 : ticks[ticks.length - 1];
   const spanX = x1 - x0 || 1;
-  const px = (x) => CHART_PAD + ((x - x0) / spanX) * (CHART_W - 2 * CHART_PAD);
-  const py = (y) => CHART_H - CHART_PAD - ((y - y0) / (y1 - y0)) * (CHART_H - 2 * CHART_PAD);
+  const px = (x) => PLOT_L + ((x - x0) / spanX) * PLOT_W;
+  const py = (y) => PLOT_T + PLOT_H - ((y - y0) / (y1 - y0)) * PLOT_H;
 
-  const lines = series
-    .filter((s) => s.points.length > 1)
+  const grid = ticks.map((value) => `
+    <line x1="${PLOT_L}" y1="${py(value).toFixed(1)}" x2="${PLOT_L + PLOT_W}" y2="${py(value).toFixed(1)}"
+          stroke="currentColor" stroke-width="0.5" opacity="${value === ticks[0] ? 0.25 : 0.12}"/>
+    <text class="tick" x="${PLOT_L - 6}" y="${(py(value) + 3.2).toFixed(1)}" text-anchor="end">${escapeHtml(axis.tick(value, unit))}</text>`
+  ).join('');
+
+  const hits = [];
+  const lines = drawn
     .map((s) => {
-      const d = s.points.map((p) => `${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(' ');
-      const last = s.points[s.points.length - 1];
-      return `<polyline fill="none" stroke="${s.color}" stroke-width="2"
+      const path = s.points.map((p) => {
+        const point = { x: px(p.x), y: py(p.y), value: p.y, time: p.x, label: s.label, color: s.color };
+        hits.push(point);
+        return point;
+      });
+      const d = path.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+      const dots = path
+        .map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="1.6" fill="${s.color}" opacity="0.5"/>`)
+        .join('');
+      const last = path[path.length - 1];
+      return `<polyline fill="none" stroke="${s.color}" stroke-width="1.6"
                 stroke-linejoin="round" stroke-linecap="round" points="${d}"/>
-              <circle cx="${px(last.x).toFixed(1)}" cy="${py(last.y).toFixed(1)}" r="2.5" fill="${s.color}"/>`;
+              ${dots}
+              <circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="2.5" fill="${s.color}"/>`;
     })
     .join('');
 
-  return `<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="none" role="img">
-    <line x1="0" y1="${CHART_H - CHART_PAD}" x2="${CHART_W}" y2="${CHART_H - CHART_PAD}"
-          stroke="currentColor" stroke-width="0.5" opacity="0.2"/>
+  const range = flat ? `${axis.format(low)} throughout` : `${axis.format(low)} – ${axis.format(high)}`;
+  const summary = `${title}: ${range}, ${shortDate(x0)} to ${shortDate(x1)}`
+    + (drawn.length > 1 ? `, one line per ${drawn.map((s) => s.label).join(', ')}` : '');
+
+  chartModels.push({ hits, format: axis.format, multi: drawn.length > 1 });
+
+  return `<svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" aria-label="${escapeHtml(summary)}">
+    ${grid}
+    <line class="guide" x1="0" y1="${PLOT_T}" x2="0" y2="${PLOT_T + PLOT_H}"
+          stroke="currentColor" stroke-width="0.6" opacity="0"/>
     ${lines}
+    <circle class="focus" r="3.4" fill="var(--card)" stroke-width="1.8" opacity="0"/>
+    <text class="tick" x="${PLOT_L}" y="${CHART_H - 4}">${escapeHtml(shortDate(x0))}</text>
+    ${shortDate(x0) === shortDate(x1) ? '' : `<text class="tick" x="${PLOT_L + PLOT_W}" y="${CHART_H - 4}" text-anchor="end">${escapeHtml(shortDate(x1))}</text>`}
   </svg>
-  <div class="span">${flat ? escapeHtml(format(low)) + ' throughout'
-      : escapeHtml(format(low)) + ' – ' + escapeHtml(format(high))}
-    · since ${when(new Date(x0).toISOString())}</div>`;
+  <div class="tip" hidden aria-hidden="true"></div>
+  <div class="span">${escapeHtml(range)}</div>`;
 }
 
 function legend(series) {
@@ -522,12 +639,28 @@ function legend(series) {
     .join('')}</div>`;
 }
 
-function chart(title, series, format) {
-  return `<div class="chart"><h4>${escapeHtml(title)}</h4>${lineChart(series, format)}${legend(series)}</div>`;
+function chart(title, series, axis) {
+  const body = lineChart(series, axis, title);
+  const index = chartModels.length - 1;
+  return `<div class="chart" data-chart="${index}">`
+    + `<h4>${escapeHtml(title)}</h4>${body}${legend(series)}</div>`;
 }
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
+}
+
+// Repositories, unlike jobs, are named by the user, so their colours are assigned
+// in name order rather than fixed. Two lines the legend calls different things
+// have to look different.
+const SERIES_COLORS = ['--accent', '--series-2', '--series-3', '--series-4'];
+
+function repositoryColors(points) {
+  const names = [...new Set(points.map((point) => point.repository))].sort();
+  const colors = new Map(
+    names.map((name, i) => [name, cssVar(SERIES_COLORS[i % SERIES_COLORS.length])]),
+  );
+  return (name) => colors.get(name) || cssVar('--accent');
 }
 
 function seriesBy(points, key, field, colorFor) {
@@ -546,21 +679,98 @@ function seriesBy(points, key, field, colorFor) {
   }));
 }
 
+// -- reading a point off the curve ------------------------------------------
+//
+// The three jobs finish at different times, so there is no shared x to line the
+// series up on: the readout snaps to the single nearest run and names it, rather
+// than inventing a column of values that never happened at the same moment.
+
+function chartPoint(svg, event) {
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const ctm = svg.getScreenCTM();
+  return ctm ? point.matrixTransform(ctm.inverse()) : null;
+}
+
+function hideChartTip(element) {
+  if (!element) return;
+  const tip = element.querySelector('.tip');
+  if (tip) tip.hidden = true;
+  const guide = element.querySelector('.guide');
+  if (guide) guide.setAttribute('opacity', '0');
+  const focus = element.querySelector('.focus');
+  if (focus) focus.setAttribute('opacity', '0');
+}
+
+let hoveredChart = null;
+
+function onChartHover(event) {
+  const element = event.target.closest('.chart[data-chart]');
+  if (element !== hoveredChart) hideChartTip(hoveredChart);
+  hoveredChart = element;
+  if (!element) return;
+
+  const svg = element.querySelector('svg');
+  const model = chartModels[Number(element.dataset.chart)];
+  if (!svg || !model || !model.hits.length) return;
+  const cursor = chartPoint(svg, event);
+  if (!cursor) return;
+
+  let nearest = null, best = Infinity;
+  for (const hit of model.hits) {
+    const distance = Math.hypot(hit.x - cursor.x, (hit.y - cursor.y) * 0.6);
+    if (distance < best) { best = distance; nearest = hit; }
+  }
+  if (!nearest || best > HOVER_RADIUS) { hideChartTip(element); return; }
+
+  const guide = element.querySelector('.guide');
+  guide.setAttribute('x1', nearest.x.toFixed(1));
+  guide.setAttribute('x2', nearest.x.toFixed(1));
+  guide.setAttribute('opacity', '0.3');
+  const focus = element.querySelector('.focus');
+  focus.setAttribute('cx', nearest.x.toFixed(1));
+  focus.setAttribute('cy', nearest.y.toFixed(1));
+  focus.setAttribute('stroke', nearest.color);
+  focus.setAttribute('opacity', '1');
+
+  const tip = element.querySelector('.tip');
+  tip.innerHTML = `<strong>${escapeHtml(model.format(nearest.value))}</strong>`
+    + (model.multi ? `<span class="who">${escapeHtml(nearest.label)}</span>` : '')
+    + `<span class="who">${escapeHtml(new Date(nearest.time).toLocaleString())}</span>`;
+  tip.hidden = false;
+
+  // The svg scales uniformly and fills the card's width, so one viewBox unit is
+  // the same number of pixels in both directions.
+  const box = element.getBoundingClientRect();
+  const rect = svg.getBoundingClientRect();
+  const scale = rect.width / CHART_W;
+  const left = rect.left - box.left + nearest.x * scale;
+  const top = rect.top - box.top + nearest.y * scale;
+  tip.style.left = Math.max(2, Math.min(left - tip.offsetWidth / 2, box.width - tip.offsetWidth - 2)) + 'px';
+  const above = top - tip.offsetHeight - 10 >= 0;
+  tip.classList.toggle('below', !above);
+  tip.style.top = (above ? top - 10 : top + 10) + 'px';
+}
+
 async function refreshTrends() {
   let data;
   try { data = await request('trends'); } catch (error) { return; }
   const points = data.points;
   const el = $('charts');
+  hideChartTip(hoveredChart);
+  hoveredChart = null;
+  chartModels.length = 0;
   if (points.length < 2) {
     el.innerHTML = '<p class="muted">Not enough finished runs yet.</p>';
     return;
   }
-  const repoColor = () => cssVar('--accent');
+  const repoColor = repositoryColors(points);
   const jobColor = (job) => cssVar('--job-' + job);
   el.innerHTML =
-    chart('Repository size', seriesBy(points, 'repository', 'repo_size_after', repoColor), bytes) +
-    chart('Unused space', seriesBy(points, 'repository', 'unused_bytes', repoColor), bytes) +
-    chart('Run duration', seriesBy(points, 'job', 'duration_seconds', jobColor), duration);
+    chart('Repository size', seriesBy(points, 'repository', 'repo_size_after', repoColor), BYTES_AXIS) +
+    chart('Unused space', seriesBy(points, 'repository', 'unused_bytes', repoColor), BYTES_AXIS) +
+    chart('Run duration', seriesBy(points, 'job', 'duration_seconds', jobColor), TIME_AXIS);
 }
 
 async function refreshHistory() {
@@ -656,6 +866,12 @@ document.addEventListener('click', async (event) => {
     }
   }
 });
+
+// Delegated, because refreshTrends rebuilds the charts whenever the history moves
+// and per-chart listeners would not survive it.
+$('charts').addEventListener('pointermove', onChartHover);
+$('charts').addEventListener('pointerleave', () => { hideChartTip(hoveredChart); hoveredChart = null; });
+$('charts').addEventListener('pointercancel', () => { hideChartTip(hoveredChart); hoveredChart = null; });
 
 refreshStatus();
 setInterval(refreshStatus, 5000);
