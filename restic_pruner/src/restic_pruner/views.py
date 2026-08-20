@@ -30,6 +30,33 @@ def run_view(run: RunRecord | None) -> dict[str, Any] | None:
     }
 
 
+def trend_view(run: RunRecord) -> dict[str, Any]:
+    """One point for the charts: the numbers only, without the metrics blob.
+
+    ``run_view`` carries every metric a job recorded, which is the right shape
+    for one run and the wrong shape for several hundred of them on a page that
+    polls.
+    """
+    metrics = run.metrics
+    return {
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "job": run.job,
+        "repository": run.repository,
+        "duration_seconds": run.duration_seconds,
+        "repo_size_after": metrics.get("repo_size_after"),
+        "unused_bytes": metrics.get("unused_bytes"),
+    }
+
+
+def is_charted(run: RunRecord) -> bool:
+    """Whether a run says anything a trend line should be drawn through.
+
+    A failed run's sizes describe a repository mid-operation, and an unfinished
+    one has no duration, so neither belongs on a line about how things are going.
+    """
+    return run.status is RunStatus.SUCCESS and run.finished_at is not None
+
+
 def job_view(job: JobName, settings: Settings, scheduler: Scheduler | None) -> dict[str, Any]:
     """Schedule-level facts, which are shared by every repository."""
     config = settings.job(job)

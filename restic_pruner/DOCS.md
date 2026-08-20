@@ -197,7 +197,14 @@ gives the repository size to reason from; on a few-gigabyte repository `t=4` is 
 hundred megabytes per run.
 
 Each run logs the exact command line it ran, so the scope that was actually verified is
-visible in the job history rather than inferred.
+visible in the job history rather than inferred, and the UI spells out what a value
+means: `5%` shows as *5% random sample*, `1/4` as *part 1 of 4*, empty as
+*structure only*.
+
+Note that Home Assistant preserves your existing options across an update. If you
+configured this before 0.3.0 you are still on whatever you set then — most likely the
+old `5%` default, which never rotates. Change it to `1/4` to get the rotating
+behaviour.
 
 ### `repack`
 
@@ -266,9 +273,22 @@ all; on a small repository the honest answer is usually that you do not.
 | `healthchecks_body` | `summary` | `summary`, `log` or `none` — see below |
 | `lock_hostname` | `true` | Name the job in restic's repository lock — see below |
 | `repack.dry_run` | `false` | Report what a repack would rewrite without doing it |
-| `history_limit` | `50` | Runs and run logs kept |
+| `history_limit` | `0` | Run records kept; 0 keeps every one — see below |
+| `log_limit` | `25` | Full run logs kept on disk |
 | `mqtt` | auto | Leave empty; the broker is discovered via the Supervisor |
 | `log_level` | `info` | `trace`, `debug`, `info`, `warning`, `error` |
+
+### How much history is kept
+
+Two limits, because the two things are different sizes. A run record is a few
+hundred bytes — a status, some counts, a duration — and it is what the history
+table and the trend charts are drawn from. A full run log is up to 2000 lines and
+is only interesting while something is being investigated.
+
+So `history_limit` defaults to `0`, meaning keep every record: ten years of daily
+runs is a few megabytes of JSON. `log_limit` defaults to `25`, and older runs keep
+their row in the table while losing their log — clicking one says so rather than
+showing an empty pane.
 
 ## Scheduling
 
@@ -420,6 +440,10 @@ You can enter a bare check UUID instead of the full URL; set `healthchecks_base_
 you self-host.
 
 ## The web UI
+
+The panel also charts repository size, unused space and run duration over the whole
+retained history, under **Trends**. Duration is drawn one line per job, in the same
+colours the history table tags them with.
 
 The add-on adds a sidebar panel showing all three schedules, one card per repository
 with its size, snapshot count, unused space and last run of each job, a live log while a

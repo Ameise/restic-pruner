@@ -55,7 +55,7 @@ class Application:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._state = StateStore(settings.data_dir, settings.history_limit)
+        self._state = StateStore(settings.data_dir, settings.history_limit, settings.log_limit)
         self._session: aiohttp.ClientSession | None = None
         self._mqtt: MqttPublisher | None = None
         self._hass: HassStatePublisher | None = None

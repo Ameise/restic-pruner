@@ -414,3 +414,44 @@ def test_button_payloads_map_onto_a_job(command: str, expected: tuple[str, bool]
     name, _, suffix = command.partition("_")
     job = next((candidate for candidate in JOB_NAMES if candidate == name), "prune")
     assert (job, suffix == "dry") == expected
+
+
+def test_history_is_unlimited_by_default_but_logs_are_not() -> None:
+    """A record is a few hundred bytes; a log is thousands of lines."""
+    settings = settings_from_options({"repository": "/srv/repo", "password": "x"}, {})
+    settings.validate()
+    assert settings.history_limit == 0, "0 means keep every run record"
+    assert settings.log_limit == 25
+
+
+def test_retention_limits_round_trip() -> None:
+    settings = settings_from_options(
+        {"repository": "/srv/repo", "password": "x", "history_limit": 200, "log_limit": 5},
+        {},
+    )
+    settings.validate()
+    assert (settings.history_limit, settings.log_limit) == (200, 5)
+
+
+def test_retention_limits_round_trip_through_env(tmp_path: Path) -> None:
+    settings = load_settings(
+        tmp_path / "missing.json",
+        {
+            "RESTIC_PRUNER_REPOSITORY": "/srv/repo",
+            "RESTIC_PRUNER_PASSWORD": "x",
+            "RESTIC_PRUNER_HISTORY_LIMIT": "0",
+            "RESTIC_PRUNER_LOG_LIMIT": "3",
+        },
+    )
+    assert (settings.history_limit, settings.log_limit) == (0, 3)
+
+
+def test_negative_history_limit_is_rejected(settings: Settings) -> None:
+    with pytest.raises(ConfigError, match="history_limit"):
+        dataclasses.replace(settings, history_limit=-1).validate()
+
+
+def test_a_zero_log_limit_is_rejected(settings: Settings) -> None:
+    """Keeping no logs at all would make a failure impossible to investigate."""
+    with pytest.raises(ConfigError, match="log_limit"):
+        dataclasses.replace(settings, log_limit=0).validate()

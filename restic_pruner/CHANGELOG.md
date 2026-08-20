@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0
+
+### Trends
+
+The add-on measures repository size, unused space and how long each job holds the
+exclusive lock, and until now showed each of them only as a single latest number.
+Unused space in particular exists to answer "is this climbing or converging",
+which one number cannot do.
+
+A **Trends** card between the repository cards and the log now charts all three
+over the whole retained history. Run duration is drawn one line per job, in the
+same colours the history table tags them with. The charts are hand-drawn SVG: the
+panel remains a single self-contained document with no build step and no
+dependencies.
+
+### History that is worth keeping
+
+Run records and their logs were the same knob, so keeping a year of overview rows
+meant keeping a year of full logs. They are very different sizes -- a record is a
+few hundred bytes, a log is up to 2000 lines -- so they are now separate:
+
+- `history_limit` defaults to **0**, meaning keep every run record. Ten years of
+  daily runs is a few megabytes.
+- `log_limit` defaults to **25** and bounds the logs alone. An older run keeps its
+  row and its counts, and clicking it says the log is no longer kept rather than
+  showing an empty pane.
+
+`history_limit` previously defaulted to 50 and was capped at 500; the cap is gone.
+
+### Also
+
+- Jobs are colour-tagged in the history table, which three job types had made hard
+  to scan.
+- The history table gained a **Size** column, so it reads as a record of the
+  repository's trajectory rather than just of events.
+- The read scope is spelled out: `5%` shows as *5% random sample*, `1/4` as *part 1
+  of 4*, empty as *structure only*. A percentage samples afresh every run and may
+  never reach some packs; `n/t` covers everything in t runs. Home Assistant keeps
+  your existing options across updates, so anyone configured before 0.3.0 is still
+  on the old fixed `5%` and had no way to tell from the UI.
+- The history table scrolls inside its card on a phone instead of pushing the whole
+  page sideways.
+- New `GET /api/trends?repository=&limit=`, the history reduced to chart points.
+
 ## 0.3.3
 
 0.3.2 stopped the panel *becoming* stale, but could not rescue a copy a browser

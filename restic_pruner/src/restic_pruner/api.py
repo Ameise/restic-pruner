@@ -4,10 +4,11 @@
 ``GET  /api/health``          liveness, used by the add-on watchdog
 ``GET  /api/status``          full status document
 ``GET  /api/runs``            run history
+``GET  /api/trends``          run history reduced to chart points
 ``GET  /api/runs/{id}``       one run
 ``GET  /api/runs/{id}/log``   full log of one run
 ``GET  /api/live``            incremental log of the running job
-``POST /api/jobs/{job}/run``  start prune or check
+``POST /api/jobs/{job}/run``  start prune, check or repack
 ``POST /api/unlock``          remove stale repository locks
 ============================  =====================================
 
@@ -31,7 +32,7 @@ from .config import JOB_NAMES, JobName, Settings
 from .jobs import JobBusyError, JobDisabledError, JobRunner, UnknownRepositoryError
 from .scheduler import Scheduler
 from .state import StateStore, Trigger
-from .views import run_view, status_view
+from .views import is_charted, run_view, status_view, trend_view
 
 _LOGGER: Final = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ def create_app(
     app.router.add_get("/api/health", handle_health)
     app.router.add_get("/api/status", handle_status)
     app.router.add_get("/api/runs", handle_runs)
+    app.router.add_get("/api/trends", handle_trends)
     app.router.add_get("/api/runs/{run_id}", handle_run)
     app.router.add_get("/api/runs/{run_id}/log", handle_run_log)
     app.router.add_get("/api/live", handle_live)
@@ -121,6 +123,21 @@ async def handle_runs(request: web.Request) -> web.Response:
     limit = _int_param(request, "limit", default=25, minimum=1, maximum=200)
     runs = request.app[_STATE].runs(job, limit, repository=repository)
     return web.json_response({"runs": [run_view(run) for run in runs]})
+
+
+async def handle_trends(request: web.Request) -> web.Response:
+    """The history reduced to plottable points, oldest first.
+
+    Separate from ``/api/runs`` because a chart wants many runs and few fields,
+    where the table wants few runs and every field.
+    """
+    repository = request.query.get("repository")
+    if repository is not None:
+        _require_repository(request, repository)
+    limit = _int_param(request, "limit", default=500, minimum=1, maximum=5000)
+    runs = request.app[_STATE].runs(None, limit, repository=repository)
+    points = [trend_view(run) for run in reversed(runs) if is_charted(run)]
+    return web.json_response({"points": points})
 
 
 async def handle_run(request: web.Request) -> web.Response:

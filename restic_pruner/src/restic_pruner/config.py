@@ -334,7 +334,11 @@ class Settings:
     retry_lock: str = "15m"
     log_level: str = "info"
     timezone: str = "UTC"
-    history_limit: int = 50
+    #: How many run records to keep. Zero keeps every one of them: a record is a
+    #: few hundred bytes, so even years of daily runs stay small.
+    history_limit: int = 0
+    #: How many run *logs* to keep, which is the part that takes real space.
+    log_limit: int = 25
     #: Used to expand a bare check UUID; point this at a self-hosted instance.
     healthchecks_base_url: str = "https://hc-ping.com"
     #: One of :data:`BODY_MODES`.
@@ -399,8 +403,10 @@ class Settings:
                 )
         if not any(self.job(name).enabled for name in JOB_NAMES):
             raise ConfigError("no job is enabled; enable at least one of prune or check")
-        if self.history_limit < 1:
-            raise ConfigError("history_limit must be at least 1")
+        if self.history_limit < 0:
+            raise ConfigError("history_limit must be 0 (keep everything) or more")
+        if self.log_limit < 1:
+            raise ConfigError("log_limit must be at least 1")
         validate_read_data_subset(self.check.read_data_subset)
         if self.repack.enabled and self.repack.max_unused.strip().lower() in ("", "unlimited"):
             raise ConfigError(
@@ -595,7 +601,8 @@ def settings_from_options(
         healthchecks_body=_as_str(options.get("healthchecks_body"), "summary").lower(),
         log_level=_as_str(options.get("log_level"), "info").lower(),
         timezone=_as_str(environ.get("TZ"), "UTC"),
-        history_limit=_as_int(options.get("history_limit"), 50),
+        history_limit=_as_int(options.get("history_limit"), 0),
+        log_limit=_as_int(options.get("log_limit"), 25),
         lock_hostname=_as_bool(options.get("lock_hostname"), True),
         hass_push=_as_bool(options.get("hass_push"), True),
         supervisor_token=supervisor_token,
@@ -627,6 +634,7 @@ def _env_options(environ: Mapping[str, str]) -> dict[str, Any]:
         "lock_hostname": get("LOCK_HOSTNAME"),
         "log_level": get("LOG_LEVEL"),
         "history_limit": get("HISTORY_LIMIT"),
+        "log_limit": get("LOG_LIMIT"),
         "retention": section("KEEP", (*_KEEP_FIELDS, "within")),
         "prune": section(
             "PRUNE",
