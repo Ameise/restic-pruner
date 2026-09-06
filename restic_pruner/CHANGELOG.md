@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.4.4
+
+### The prune job no longer repacks behind your back
+
+`--max-unused` was only passed to restic when `prune.max_unused` had a value. Left off,
+restic does not skip the limit -- it applies **its own default of 5%**, and the prune job
+starts repacking, which is the one thing it exists not to do. Nothing on the dashboard
+said it was happening; the runs were simply slower and the repository churned.
+
+- The flag is **always** sent now, so what the page says is what restic is told.
+- An empty `prune.max_unused` is **refused at startup** rather than quietly meaning 5%.
+  Write `unlimited` to leave repacking to the repack job, or a percentage such as `5%` to
+  ask for it deliberately. A disabled prune job is not checked.
+
+### Copy any part of the dashboard
+
+Reading a number off the page is one thing; getting it into a notebook or a chat window
+was retyping.
+
+- A **copy button** on the header, the trends, the log, the history table and each
+  repository card, hidden until that section is hovered or the button is focused. The
+  header's copies the whole page.
+- The text is **Markdown, not the raw API JSON**: it says the same thing in a fraction of
+  the words, and every timestamp is absolute UTC -- a *7 days ago* means nothing once it
+  has left the page that computed it. The charts come across as a summary line and a
+  short tail per series, since several hundred raw points is the wrong thing to paste.
+- Two ordinary installs cannot use the clipboard API at all -- plain HTTP on a LAN
+  address is not a secure context, and Home Assistant frames the add-on without
+  clipboard permission -- so a **fallback** handles both the missing API and the refusal.
+
+### Weeks you can see in the history table
+
+The three jobs run as a weekly cluster, and the table drew them as three unrelated rows.
+
+- Rows are now **banded by ISO week**, so each cluster reads as one block. Weeks begin on
+  Monday, so a Sunday cluster falls wholly inside one.
+- Banding is **dropped under the duration and size sorts**, where the weeks interleave and
+  the stripes would say nothing about the rows they were striping.
+
 ## 0.4.3
 
 ### A log scale, per chart
