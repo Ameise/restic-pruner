@@ -570,8 +570,10 @@ class Restic:
         """
         config = self._settings.prune
         args = ["forget", "--prune", *self._repository.retention.as_flags()]
-        if config.max_unused:
-            args += ["--max-unused", config.max_unused]
+        # Always emitted, like the repack job's. Left off, restic applies its own
+        # default of 5%, and the job quietly starts repacking -- the one thing
+        # this job is meant not to do.
+        args += ["--max-unused", config.max_unused]
         if config.max_repack_size:
             args += ["--max-repack-size", config.max_repack_size]
         if dry_run:

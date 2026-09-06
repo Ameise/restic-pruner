@@ -16,6 +16,7 @@ import pytest
 from restic_pruner.config import (
     CheckConfig,
     ConfigError,
+    PruneConfig,
     RepackConfig,
     Settings,
     parse_subset_slice,
@@ -223,6 +224,20 @@ def test_unreported_unused_space_is_not_the_same_as_none() -> None:
     )
     assert clean.unused_bytes == 0
     assert clean.unused_percent == 0.0
+
+
+def test_prune_requires_a_max_unused(settings: Settings) -> None:
+    """Empty would hand the repacking decision to restic, whose default repacks."""
+    broken = dataclasses.replace(settings, prune=PruneConfig(enabled=True, max_unused=""))
+    with pytest.raises(ConfigError, match=r"prune\.max_unused"):
+        broken.validate()
+    dataclasses.replace(
+        settings, prune=PruneConfig(enabled=True, max_unused="unlimited")
+    ).validate()
+
+
+def test_a_disabled_prune_is_not_validated(settings: Settings) -> None:
+    dataclasses.replace(settings, prune=PruneConfig(enabled=False, max_unused="")).validate()
 
 
 def test_repack_requires_a_real_max_unused(settings: Settings) -> None:

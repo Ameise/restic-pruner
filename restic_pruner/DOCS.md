@@ -145,6 +145,10 @@ part of a prune on a remote backend. The trade-off is that some dead data remain
 partially-used packs. Set a percentage (`5%`) to reclaim it, and add `max_repack_size` (e.g. `2G`) to
 bound how much data a single run moves.
 
+Do not leave `max_unused` empty. The value is always passed to restic, and an empty
+one is refused at startup: without it restic would fall back to its *own* default of
+5%, and the prune job would start repacking without anything on this page saying so.
+
 `exact_reclaimed` measures the freed bytes with a `restic stats --mode raw-data` call
 before and immediately after the prune. It is exact, and it is not free: each call
 re-opens the repository and re-reads every index over the network, *inside the exclusive
