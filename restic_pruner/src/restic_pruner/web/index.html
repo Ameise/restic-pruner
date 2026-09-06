@@ -61,7 +61,7 @@
   h3 { font-size: 16px; margin: 0; }
   header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
   .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   .card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
   .card-head .spacer { flex: 1; }
   .target { font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; }
@@ -159,6 +159,18 @@
   button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
   button.danger:hover:not(:disabled) { border-color: var(--fail); color: var(--fail); }
   button.small { font-size: 13px; padding: 5px 10px; }
+  /* Out of the way until wanted: a section's copy button appears when the
+     section is hovered. Hidden with opacity rather than display so it keeps its
+     place in the tab order, and shows itself once focused. */
+  button.copy {
+    position: absolute; top: 12px; right: 12px; z-index: 1;
+    font-size: 11px; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px;
+    color: var(--muted); opacity: 0; transition: opacity .15s;
+  }
+  header button.copy, .card-head button.copy { position: static; }
+  .card:hover button.copy, header:hover button.copy,
+  button.copy:focus-visible, button.copy.done { opacity: 1; }
+  button.copy.done { border-color: var(--ok); color: var(--ok); }
   pre.log {
     margin: 0; padding: 12px;
     background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
@@ -191,6 +203,10 @@
   select:hover { border-color: var(--accent); }
   td { padding: 7px 8px 7px 0; border-top: 1px solid var(--border); }
   tbody tr { cursor: pointer; }
+  /* The three jobs run as a weekly cluster. Banding by calendar week draws each
+     cluster as one block instead of three unrelated rows. Ahead of the hover
+     rule, which has the same specificity and should win. */
+  tbody tr.week-band { background: color-mix(in srgb, var(--text) 6%, transparent); }
   tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .full { grid-column: 1 / -1; }
   .muted { color: var(--muted); }
@@ -211,6 +227,8 @@
   <span class="spacer" style="flex:1"></span>
   <span class="target" id="version"></span>
   <span class="target" id="timezone"></span>
+  <button class="copy" type="button" data-copy="all"
+          title="Copy the whole dashboard as Markdown">⧉ copy</button>
 </header>
 
 <div class="grid">
@@ -242,6 +260,7 @@
   <div class="full grid" id="repositories"></div>
 
   <section class="card full" id="card-trends">
+    <button class="copy" type="button" data-copy="trends" title="Copy the trends as Markdown">⧉ copy</button>
     <h2>Trends</h2>
     <div class="charts" id="charts">
       <p class="muted">Not enough finished runs yet.</p>
@@ -249,6 +268,7 @@
   </section>
 
   <section class="card full" id="card-log">
+    <button class="copy" type="button" data-copy="log" title="Copy this log">⧉ copy</button>
     <h2><span id="log-title">Log</span></h2>
     <pre class="log" id="log">No run selected.</pre>
   </section>
@@ -264,6 +284,7 @@
         <option value="check">check</option>
         <option value="repack">repack</option>
       </select>
+      <button class="copy" type="button" data-copy="history" title="Copy the history table as Markdown">⧉ copy</button>
     </div>
     <div class="table-wrap">
     <table>
@@ -311,6 +332,9 @@ let historyFilterShown = null;
 // The poll interval and the post-click refresh can otherwise overlap, and two
 // concurrent log pumps interleave their appends.
 let refreshing = false;
+//: The most recent /api/status document. refreshStatusOnce paints straight from
+//: its local copy; the copy buttons need to reach it later, out of band.
+let latestStatus = null;
 
 function toast(message, isError) {
   const el = $('toast');
@@ -417,6 +441,191 @@ function latestUnused(...runs) {
   return measured.length ? measured[measured.length - 1].metrics.unused_bytes : undefined;
 }
 
+// -- copying ----------------------------------------------------------------
+//
+// The dashboard as text, for pasting into a notebook or a chat. Markdown rather
+// than the raw API JSON: it says the same thing in a fraction of the words, and
+// every timestamp is absolute -- "7 days ago" means nothing once it has left the
+// page that was computing it.
+
+async function copyText(text) {
+  // Two ways this fails on a perfectly ordinary install, which is why the old
+  // execCommand path is still here and is still reached on a throw rather than
+  // only on a missing API:
+  //   - navigator.clipboard needs a secure context, and ingress over plain HTTP
+  //     on a LAN address is not one, so the API is simply absent;
+  //   - Home Assistant frames the add-on without allow="clipboard-write", so on
+  //     an HTTPS install the API is present and rejects.
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      // fall through
+    }
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand('copy');
+  area.remove();
+  if (!copied) throw new Error('the browser refused the copy');
+}
+
+const at = (iso) => (iso ? new Date(iso).toISOString() : '–');
+const mdCell = (value) =>
+  String(value === null || value === undefined || value === '' ? '–' : value).replace(/\|/g, '\\|');
+
+function mdTable(headers, rows) {
+  return [
+    '| ' + headers.join(' | ') + ' |',
+    '| ' + headers.map(() => '---').join(' | ') + ' |',
+    ...rows.map((row) => '| ' + row.map(mdCell).join(' | ') + ' |'),
+  ].join('\n');
+}
+
+function markdownRepository(repository) {
+  const jobs = repository.jobs;
+  const pruneMetrics = (jobs.prune.last_run && jobs.prune.last_run.metrics) || {};
+  const checkMetrics = (jobs.check.last_run && jobs.check.last_run.metrics) || {};
+  const unused = latestUnused(jobs.prune.last_run, jobs.repack.last_run);
+  const lastOf = (job) => {
+    const run = jobs[job].last_run;
+    return run ? at(run.finished_at || run.started_at) : '–';
+  };
+  return [
+    `### ${repository.name} (${repository.slug})`,
+    '',
+    `- Repository: ${repository.target}`,
+    `- Size: ${bytes(repository.size_bytes)}`,
+    `- Snapshots: ${repository.snapshot_count ?? '–'}`,
+    `- Retention: ${retentionSummary(repository.retention)}`,
+    '',
+    mdTable(['Job', 'Status', 'Last run (UTC)', 'Detail'], [
+      ['prune', jobs.prune.last_status, lastOf('prune'),
+        `${pruneMetrics.snapshots_removed ?? '–'} removed · ${bytes(pruneMetrics.bytes_reclaimed)} freed`
+        + (pruneMetrics.exact_sizes === false ? ' (approx.)' : '')],
+      ['check', jobs.check.last_status, lastOf('check'),
+        checkMetrics.read_data_subset ? readScope(checkMetrics.read_data_subset) : '–'],
+      ['repack', jobs.repack.last_status, lastOf('repack'),
+        `unused ${unused === undefined ? '–' : bytes(unused)}`],
+    ]),
+  ].join('\n');
+}
+
+function markdownStatus(status) {
+  if (!status) return '## Status\n\n_Not loaded yet._';
+  const schedule = (job) => (status.jobs[job].enabled
+    ? `\`${status.jobs[job].schedule}\`, next ${at(status.jobs[job].next_run)}`
+    : 'disabled');
+  return [
+    '## Status',
+    '',
+    `- Version: ${status.version}`,
+    `- Timezone: ${status.timezone}`,
+    `- Running: ${status.running
+      ? `${status.current_run.job} on ${status.current_run.repository}`
+      : 'idle'}`,
+    '',
+    '### Schedule',
+    '',
+    ...JOBS.map((job) => `- ${job}: ${schedule(job)}`),
+    '',
+    '## Repositories',
+    '',
+    status.repositories.map(markdownRepository).join('\n\n'),
+  ].join('\n');
+}
+
+//: The charts in words: a summary line per series, then a short tail. Several
+//: hundred raw points is the wrong thing to paste, and the shape of the last few
+//: runs is the part anyone is asking about.
+const TREND_TAIL = 6;
+
+function markdownTrends(points) {
+  if (points.length < 2) return '## Trends\n\n_Not enough finished runs yet._';
+  const uncolored = () => '';
+  const sections = [
+    ['Repository size', seriesBy(points, 'repository', 'repo_size_after', uncolored), bytes],
+    ['Unused space', seriesBy(points, 'repository', 'unused_bytes', uncolored), bytes],
+    ['Run duration', seriesBy(points, 'job', 'duration_seconds', uncolored), duration],
+  ];
+  const lines = ['## Trends', ''];
+  for (const [title, series, format] of sections) {
+    lines.push(`### ${title}`, '');
+    for (const entry of series) {
+      if (!entry.points.length) continue;
+      const values = entry.points.map((point) => point.y);
+      lines.push(`- **${entry.label}** — ${values.length} runs, `
+        + `${format(Math.min(...values))} to ${format(Math.max(...values))}`);
+      lines.push('  - latest: ' + entry.points.slice(-TREND_TAIL)
+        .map((point) => `${new Date(point.x).toISOString().slice(0, 10)} ${format(point.y)}`)
+        .join(' · '));
+    }
+    lines.push('');
+  }
+  return lines.join('\n').trimEnd();
+}
+
+function markdownHistory(runs) {
+  if (!runs.length) return '## History\n\n_No runs._';
+  return [
+    '## History',
+    '',
+    `${historyJob ? `${historyJob} runs only` : 'All jobs'}, newest first, times in UTC.`,
+    '',
+    mdTable(
+      ['Job', 'Repository', 'Status', 'Started', 'Duration', 'Size after', 'Trigger', 'Detail'],
+      runs.map((run) => [
+        run.job + (run.dry_run ? ' (dry)' : ''),
+        run.repository,
+        run.status,
+        at(run.started_at),
+        duration(run.duration_seconds),
+        run.metrics.repo_size_after === undefined ? '–' : bytes(run.metrics.repo_size_after),
+        run.trigger,
+        historyDetail(run),
+      ]),
+    ),
+  ].join('\n');
+}
+
+function markdownLog() {
+  const text = $('log').textContent.trim();
+  const title = $('log-title').textContent;
+  return text ? `## ${title}\n\n\`\`\`\n${text}\n\`\`\`` : `## ${title}\n\n_Empty._`;
+}
+
+function markdownAll() {
+  return [
+    '# Restic Pruner',
+    '',
+    `Copied ${new Date().toISOString()}.`,
+    '',
+    markdownStatus(latestStatus),
+    '',
+    markdownTrends(trendPoints),
+    '',
+    markdownHistory(sortedHistory()),
+  ].join('\n');
+}
+
+//: What each copy button copies. Keyed by its data-copy value.
+const COPY_SOURCES = {
+  all: () => markdownAll(),
+  trends: () => markdownTrends(trendPoints),
+  history: () => markdownHistory(sortedHistory()),
+  log: () => markdownLog(),
+  repository: (button) => {
+    const repositories = latestStatus ? latestStatus.repositories : [];
+    const repository = repositories.find((entry) => entry.slug === button.dataset.repository);
+    return repository ? markdownRepository(repository) : null;
+  },
+};
+
 function repositoryCard(repository, running) {
   const prune = repository.jobs.prune;
   const check = repository.jobs.check;
@@ -432,6 +641,7 @@ function repositoryCard(repository, running) {
         <h3>${escapeHtml(repository.name)}</h3>
         <span class="spacer"></span>
         ${pill(overallStatus(repository.jobs))}
+        <button class="copy" type="button" data-copy="repository" data-repository="${escapeHtml(repository.slug)}" title="Copy this repository as Markdown">⧉</button>
       </div>
       <div class="target">${escapeHtml(repository.target)}</div>
     </div>
@@ -487,6 +697,7 @@ async function refreshStatusOnce() {
     return;
   }
 
+  latestStatus = status;
   checkForStalePage(status.version);
 
   const running = status.running;
@@ -1044,6 +1255,38 @@ async function refreshHistory() {
   if (!filterChanged) await refreshTrends();
 }
 
+//: The "Detail" column in words, without markup, so the copied table reads the
+//: same as the painted one.
+function historyDetail(run) {
+  if (run.error) return run.error.split('\n')[0].slice(0, 80);
+  if ((run.job === 'prune' || run.job === 'repack') && run.metrics.bytes_reclaimed !== undefined) {
+    const removed = run.metrics.snapshots_removed !== undefined
+      ? `${run.metrics.snapshots_removed} removed · ` : '';
+    return `${removed}${bytes(run.metrics.bytes_reclaimed)} freed`;
+  }
+  if (run.job === 'check' && run.metrics.read_data_subset) {
+    const count = run.metrics.snapshot_count !== undefined
+      ? ` · ${run.metrics.snapshot_count} snapshots` : '';
+    return `${readScope(run.metrics.read_data_subset)}${count}`;
+  }
+  return '';
+}
+
+//: The ISO week a run started in, as a comparable key. Weeks begin on Monday, so
+//: a Sunday cluster falls wholly inside one of them, and the year comes from the
+//: week's Thursday, which is what makes the turn of the year unambiguous.
+function isoWeekKey(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const thursday = new Date(date);
+  thursday.setHours(0, 0, 0, 0);
+  thursday.setDate(thursday.getDate() - ((date.getDay() + 6) % 7) + 3);
+  const firstThursday = new Date(thursday.getFullYear(), 0, 4);
+  firstThursday.setDate(firstThursday.getDate() - ((firstThursday.getDay() + 6) % 7) + 3);
+  const week = 1 + Math.round((thursday - firstThursday) / (7 * 86400000));
+  return `${thursday.getFullYear()}-W${week}`;
+}
+
 function renderHistory() {
   paintSortHeaders();
   const body = $('history');
@@ -1052,15 +1295,21 @@ function renderHistory() {
     body.innerHTML = `<tr><td colspan="8" class="muted">${nothing}</td></tr>`;
     return;
   }
+  // Banding only means anything while the rows are in time order. Under the
+  // duration and size sorts the weeks interleave, and the stripes would say
+  // nothing about the runs they were striping.
+  const banded = historySort.column === null || historySort.column === 'started';
+  let previousWeek = null;
+  let band = false;
   body.innerHTML = sortedHistory().map((run) => {
+    const week = isoWeekKey(run.started_at);
+    if (previousWeek !== null && week !== previousWeek) band = !band;
+    previousWeek = week;
+    const text = historyDetail(run);
     const detail = run.error
-      ? `<span class="muted">${escapeHtml(run.error.split('\n')[0]).slice(0, 80)}</span>`
-      : (run.job === 'prune' || run.job === 'repack') && run.metrics.bytes_reclaimed !== undefined
-        ? `${run.metrics.snapshots_removed !== undefined ? `${run.metrics.snapshots_removed} removed · ` : ''}${bytes(run.metrics.bytes_reclaimed)} freed`
-        : run.job === 'check' && run.metrics.read_data_subset
-          ? `${escapeHtml(readScope(run.metrics.read_data_subset))}${run.metrics.snapshot_count !== undefined ? ` · ${run.metrics.snapshot_count} snapshots` : ''}`
-          : '';
-    return `<tr data-run-id="${run.id}">
+      ? `<span class="muted">${escapeHtml(text)}</span>`
+      : escapeHtml(text);
+    return `<tr${banded && band ? ' class="week-band"' : ''} data-run-id="${run.id}">
       <td>${jobTag(run.job)}${run.dry_run ? ' <span class="muted">(dry)</span>' : ''}</td>
       <td>${escapeHtml(run.repository)}</td>
       <td>${pill(run.status)}</td>
@@ -1075,6 +1324,38 @@ function renderHistory() {
 }
 
 document.addEventListener('click', async (event) => {
+  // First, so that a copy button sitting inside the history card cannot also pin
+  // that card's log on its way past the row handler below.
+  const copyButton = event.target.closest('[data-copy]');
+  if (copyButton) {
+    let text = null;
+    try {
+      const build = COPY_SOURCES[copyButton.dataset.copy];
+      text = build ? build(copyButton) : null;
+    } catch (error) {
+      text = null;
+    }
+    if (!text) { toast('Nothing to copy yet', true); return; }
+    try {
+      await copyText(text);
+    } catch (error) {
+      toast(error.message, true);
+      return;
+    }
+    // Say so on the button itself: the toast is at the far end of the page from
+    // whichever corner was clicked.
+    const label = copyButton.textContent;
+    copyButton.classList.add('done');
+    copyButton.textContent = '✓';
+    clearTimeout(copyButton._timer);
+    copyButton._timer = setTimeout(() => {
+      copyButton.classList.remove('done');
+      copyButton.textContent = label;
+    }, 1400);
+    toast(`Copied ${text.split('\n').length} lines of Markdown`);
+    return;
+  }
+
   const runButton = event.target.closest('[data-run]');
   if (runButton) {
     const job = runButton.dataset.run;

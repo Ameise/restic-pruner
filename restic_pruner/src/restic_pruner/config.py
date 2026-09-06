@@ -408,6 +408,12 @@ class Settings:
         if self.log_limit < 1:
             raise ConfigError("log_limit must be at least 1")
         validate_read_data_subset(self.check.read_data_subset)
+        if self.prune.enabled and not self.prune.max_unused.strip():
+            raise ConfigError(
+                "prune.max_unused must be set, for example 'unlimited' to leave "
+                "repacking to the repack job, or a percentage such as '5%'. Empty "
+                "hands the choice to restic, whose own default repacks."
+            )
         if self.repack.enabled and self.repack.max_unused.strip().lower() in ("", "unlimited"):
             raise ConfigError(
                 "repack.max_unused must be a percentage or a size, for example '5%'. "
