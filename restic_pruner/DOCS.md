@@ -452,10 +452,28 @@ its own colour in the size charts. Each chart has a labelled axis, and pointing 
 curve reads out the nearest run: its exact value, which job or repository it belongs to,
 and when it finished.
 
+The three charts are three readings of the same runs, so pointing at a point in one
+**labels the same run in the other two**. A run that recorded no such number -- a check
+job has a duration but no repository size -- simply leaves those charts blank rather
+than showing a neighbouring run instead.
+
+Underneath the charts, the run being pointed at is spelled out as **the row the history
+table would give it**: which job, on whose trigger, and what it freed. Click a point to
+**pin** that run, so the row stays put while you go back to the lines; clicking a row in
+the history table pins it too, and marks it on the charts. `Esc`, the **✕ unpin** button,
+or clicking the point again lets go.
+
+The **overlay** button beside the Trends heading lays all three charts over one another.
+Bytes and seconds cannot share a scale, so they do not: **sizes are read off the left
+axis and durations off the right**, and the line's dash pattern says which of the three
+readings it is -- solid for size, dashed for unused space, dotted for duration. Colour
+keeps the meaning it has in the split view. Which view you last chose is remembered.
+
 Each chart also has a **log** button that switches its y axis to a logarithmic one, which
-is what makes a minute-long prune readable on the same plot as an hour-long repack. The
-setting is remembered per chart. Runs measuring zero cannot be drawn on a log axis; they
-are left out and counted in the line under the chart.
+is what makes a minute-long prune readable on the same plot as an hour-long repack. In
+the overlay it applies to both axes at once. The setting is remembered per chart. Runs
+measuring zero cannot be drawn on a log axis; they are left out and counted in the line
+under the chart.
 
 The add-on adds a sidebar panel showing all three schedules, one card per repository
 with its size, snapshot count, unused space and last run of each job, a live log while a
