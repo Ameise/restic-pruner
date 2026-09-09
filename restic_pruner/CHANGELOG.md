@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.5.0
+
+### The dashboard stopped shoving things aside
+
+The copy buttons added in 0.4.4 were laid out as ordinary items in the header and in
+each repository's card head, so they took their strip of the row whether or not
+anyone wanted them -- invisible until hovered, but always occupying the space. That
+is why the version, the timezone and every repository's status pill sat pushed left
+of where they had always been.
+
+They sit where they did again. The button is out of the flow now, and the text or
+pill beside it **slides aside only while the pointer is in that corner**, uncovering
+the button in the space it vacates.
+
+### All three trends on one chart
+
+The three trend charts are three readings of the same runs, so **a toggle in the
+Trends heading lays them over one another**.
+
+Bytes and seconds cannot share a scale, and the overlay does not pretend otherwise:
+**sizes are read off the left axis and durations off the right**, with the dash
+pattern saying which of the three readings a line is -- solid for size, dashed for
+unused space, dotted for duration. Colour keeps the meaning it has in the split
+view, one per repository for the sizes and one per job for the durations. The log
+toggle is there too, and applies to both axes at once.
+
+Which view you last chose is remembered, as the log scales already were.
+
+### One run, read across every chart
+
+Hovering a point used to read out the chart it was in and leave the others dark,
+though the same run had a point in each of them. Now **hovering one point labels the
+same run in the neighbouring charts too**, dimmer, so the chart being asked is still
+the one being read. Where a run recorded no such number -- a check job has a
+duration but no repository size -- that chart stays blank rather than showing a
+neighbouring run instead.
+
+### The run behind the point
+
+A point on a chart is a number with no story: which job put it there, on whose
+schedule, what it freed. **The trends card now renders that run's history row
+underneath the charts**, built by the same code the history table uses, so the two
+cannot come to disagree.
+
+- **Hovering** a point shows its row.
+- **Clicking** a point pins it, so the row stays put while the eye goes back to the
+  lines. Clicking a row in the history table pins it too, and marks it on the
+  charts. `Esc`, the `✕ unpin` button, or clicking the point again lets go.
+
+### Also
+
+- `/api/trends` now includes each point's **run id**. It is the one field that lets a
+  point be traded back for the whole run; everything else still comes from
+  `/api/runs/{id}`, and only when someone actually asks.
+
 ## 0.4.4
 
 ### The prune job no longer repacks behind your back
