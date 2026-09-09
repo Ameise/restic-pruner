@@ -161,6 +161,7 @@ async def test_trends_returns_plottable_points(client: Client) -> None:
     assert "points" in payload
     for point in payload["points"]:
         assert set(point) == {
+            "id",
             "finished_at",
             "job",
             "repository",

@@ -35,10 +35,12 @@ def trend_view(run: RunRecord) -> dict[str, Any]:
 
     ``run_view`` carries every metric a job recorded, which is the right shape
     for one run and the wrong shape for several hundred of them on a page that
-    polls.
+    polls. The id is the exception: it is one short string, and it is what lets a
+    point on a chart be traded back for the whole run when someone asks about it.
     """
     metrics = run.metrics
     return {
+        "id": run.id,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "job": run.job,
         "repository": run.repository,
