@@ -875,8 +875,6 @@ const PLOT_L = 48;  // left gutter: y tick labels
 const PLOT_R = 8;
 const PLOT_T = 8;
 const PLOT_B = 18;  // bottom gutter: the first and last date
-const PLOT_W = CHART_W - PLOT_L - PLOT_R;
-const PLOT_H = CHART_H - PLOT_T - PLOT_B;
 const HOVER_RADIUS = 22;  // in viewBox units
 
 // Ticks have to be round in the unit the value is *printed* in: 2 GiB and 4 GiB,
@@ -1333,10 +1331,7 @@ function hideChartTip(element) {
 
 function hideAllChartTips() {
   chartElements().forEach(hideChartTip);
-  hoveredChart = null;
 }
-
-let hoveredChart = null;
 
 // The run nearest the pointer in one chart, or null when the pointer is not close
 // enough to any of them to be pointing at one.
@@ -1411,7 +1406,6 @@ function showRun(runId, source, sourceHit) {
 function onChartHover(event) {
   const element = event.target.closest('.chart[data-chart]');
   if (!element) return;
-  hoveredChart = element;
   const hit = nearestHit(element, event);
   if (!hit) {
     // Off the lines but still inside the card: fall back to whatever is pinned,
@@ -1424,7 +1418,6 @@ function onChartHover(event) {
 }
 
 function onChartLeave() {
-  hoveredChart = null;
   chartElements().forEach(hideChartTip);
   if (pinnedTrendRun) showRun(pinnedTrendRun, null, null);
   else hideReadout();
