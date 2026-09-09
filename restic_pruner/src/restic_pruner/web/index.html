@@ -7,7 +7,7 @@
 <!-- The version this page was built from. Compared at runtime against what the
      add-on reports, so a page served from a stale cache can notice and say so.
      Kept in step with the other version strings by scripts/check_versions.py. -->
-<meta name="build-version" content="0.4.4">
+<meta name="build-version" content="0.5.0">
 <style>
   :root {
     color-scheme: light dark;
@@ -88,20 +88,32 @@
     box-shadow: 0 4px 14px rgba(0,0,0,.16); font-variant-numeric: tabular-nums;
   }
   .chart .tip.below { transform: none; }
+  /* The charts that are echoing a run read off a neighbour say so by saying it more
+     quietly, so the one being asked stays the one being read. */
+  .chart .tip.linked { opacity: .72; border-style: dashed; }
   .chart .tip strong { display: block; font-size: 13px; }
   .chart .tip .who { display: block; color: var(--muted); }
-  .chart h4 button.scale {
+  button.scale {
     font: inherit; font-size: 10px; letter-spacing: .03em;
     margin-left: 8px; padding: 1px 7px; border-radius: 999px;
     border: 1px solid var(--border); background: none; color: var(--muted);
     cursor: pointer; text-transform: none;
   }
-  .chart h4 button.scale:hover { border-color: var(--accent); color: var(--accent); }
-  .chart h4 button.scale[aria-pressed="true"] {
+  button.scale:hover { border-color: var(--accent); color: var(--accent); }
+  button.scale[aria-pressed="true"] {
     border-color: var(--accent); background: var(--accent); color: #fff;
   }
+  /* The overlay is one chart for the whole row, whatever the auto-fit would
+     otherwise have done with a lone child. */
+  .chart.wide { grid-column: 1 / -1; }
   .chart .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); margin-top: 4px; }
   .chart .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
+  /* In the overlay the dash pattern is what says which of the three readings a line
+     is, so the legend shows a scrap of the line rather than a plain square. */
+  .chart .legend svg.dash {
+    display: inline-block; width: 18px; height: 6px;
+    margin-right: 4px; vertical-align: middle;
+  }
   .chart .span { font-size: 11px; color: var(--muted); }
   /* Name, overall status and target in one frame, so it is clear the pill up here
      describes the repository and not the first job listed under it. */
@@ -167,10 +179,37 @@
     font-size: 11px; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px;
     color: var(--muted); opacity: 0; transition: opacity .15s;
   }
-  header button.copy, .card-head button.copy { position: static; }
-  .card:hover button.copy, header:hover button.copy,
-  button.copy:focus-visible, button.copy.done { opacity: 1; }
+  .card:hover button.copy, button.copy:focus-visible, button.copy.done { opacity: 1; }
   button.copy.done { border-color: var(--ok); color: var(--ok); }
+  /* Where the button would land on top of something -- the header's version and
+     timezone, a repository's status pill -- it still costs them no space at rest.
+     It stays out of the flow, and the run beside it slides aside to uncover it
+     while the pointer is in that corner. The slide's margin widens .meta, so the
+     uncovered strip is inside the hover zone and the pointer can cross onto the
+     button without the strip closing under it. --copy-slide is the button's own
+     width, which CSS cannot measure, so each context states it. */
+  .meta { position: relative; display: flex; align-items: center; gap: 12px; }
+  .meta > button.copy { top: 50%; right: 0; transform: translateY(-50%); }
+  .meta .slide { display: flex; align-items: center; gap: 12px;
+                 margin-right: 0; transition: margin-right .15s ease; }
+  .meta:hover .slide, .meta:focus-within .slide { margin-right: var(--copy-slide); }
+  .meta:hover button.copy, .meta:focus-within button.copy { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { .meta .slide { transition: none; } }
+  /* The run under the pointer, spelled out as the row the history table would give
+     it. Framed, because it belongs to the charts above rather than to the card. */
+  #trend-readout {
+    margin-top: 14px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  #trend-readout.pinned { border-color: var(--accent); }
+  #trend-readout .readout-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px;
+  }
+  #trend-readout .readout-head .spacer { flex: 1; }
+  #trend-readout table { min-width: 560px; }
+  #trend-readout th { padding-bottom: 4px; }
+  #trend-readout td { border: 0; }
+  #trend-readout tbody tr { cursor: default; }
   pre.log {
     margin: 0; padding: 12px;
     background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
@@ -225,10 +264,14 @@
   <h1>Restic Pruner</h1>
   <span id="global-status" class="pill never">loading</span>
   <span class="spacer" style="flex:1"></span>
-  <span class="target" id="version"></span>
-  <span class="target" id="timezone"></span>
-  <button class="copy" type="button" data-copy="all"
-          title="Copy the whole dashboard as Markdown">⧉ copy</button>
+  <span class="meta" style="--copy-slide:64px">
+    <span class="slide">
+      <span class="target" id="version"></span>
+      <span class="target" id="timezone"></span>
+    </span>
+    <button class="copy" type="button" data-copy="all"
+            title="Copy the whole dashboard as Markdown">⧉ copy</button>
+  </span>
 </header>
 
 <div class="grid">
@@ -261,9 +304,31 @@
 
   <section class="card full" id="card-trends">
     <button class="copy" type="button" data-copy="trends" title="Copy the trends as Markdown">⧉ copy</button>
-    <h2>Trends</h2>
+    <div class="card-head">
+      <h2 style="margin:0">Trends</h2>
+      <button class="scale" id="view-overlay" type="button" aria-pressed="false"
+              title="Draw all three trends on one chart: sizes against the left axis, durations against the right">overlay</button>
+    </div>
     <div class="charts" id="charts">
       <p class="muted">Not enough finished runs yet.</p>
+    </div>
+    <!-- The run under the pointer, or the pinned one, as the row the history table
+         would give it. A point on a chart is a number; this is what it was. -->
+    <div id="trend-readout" hidden>
+      <div class="readout-head">
+        <span id="readout-what" class="muted">The run under the pointer</span>
+        <span class="spacer"></span>
+        <button id="unpin" class="small" type="button" hidden>✕ unpin</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Job</th><th>Repository</th><th>Status</th><th>Started</th>
+            <th>Duration</th><th>Size</th><th>Trigger</th><th>Detail</th>
+          </tr></thead>
+          <tbody id="readout-row"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
@@ -277,14 +342,18 @@
     <div class="card-head">
       <h2 style="margin:0">History</h2>
       <span class="spacer"></span>
-      <label class="muted" for="history-job" style="font-size:12px">Job</label>
-      <select id="history-job">
-        <option value="">All jobs</option>
-        <option value="prune">prune</option>
-        <option value="check">check</option>
-        <option value="repack">repack</option>
-      </select>
-      <button class="copy" type="button" data-copy="history" title="Copy the history table as Markdown">⧉ copy</button>
+      <span class="meta" style="--copy-slide:64px">
+        <span class="slide">
+          <label class="muted" for="history-job" style="font-size:12px">Job</label>
+          <select id="history-job">
+            <option value="">All jobs</option>
+            <option value="prune">prune</option>
+            <option value="check">check</option>
+            <option value="repack">repack</option>
+          </select>
+        </span>
+        <button class="copy" type="button" data-copy="history" title="Copy the history table as Markdown">⧉ copy</button>
+      </span>
     </div>
     <div class="table-wrap">
     <table>
@@ -640,8 +709,10 @@ function repositoryCard(repository, running) {
       <div class="card-head">
         <h3>${escapeHtml(repository.name)}</h3>
         <span class="spacer"></span>
-        ${pill(overallStatus(repository.jobs))}
-        <button class="copy" type="button" data-copy="repository" data-repository="${escapeHtml(repository.slug)}" title="Copy this repository as Markdown">⧉</button>
+        <span class="meta" style="--copy-slide:28px">
+          <span class="slide">${pill(overallStatus(repository.jobs))}</span>
+          <button class="copy" type="button" data-copy="repository" data-repository="${escapeHtml(repository.slug)}" title="Copy this repository as Markdown">⧉</button>
+        </span>
       </div>
       <div class="target">${escapeHtml(repository.target)}</div>
     </div>
@@ -804,8 +875,6 @@ const PLOT_L = 48;  // left gutter: y tick labels
 const PLOT_R = 8;
 const PLOT_T = 8;
 const PLOT_B = 18;  // bottom gutter: the first and last date
-const PLOT_W = CHART_W - PLOT_L - PLOT_R;
-const PLOT_H = CHART_H - PLOT_T - PLOT_B;
 const HOVER_RADIUS = 22;  // in viewBox units
 
 // Ticks have to be round in the unit the value is *printed* in: 2 GiB and 4 GiB,
@@ -925,110 +994,252 @@ function aboveZero(points) {
   return segments;
 }
 
-function lineChart(series, axis, title, log) {
-  // A single point is a dot, not a trend: a series only counts once it has two.
+// Two boxes to draw in: the narrow one is a third of the row, the wide one is the
+// overlay, which takes the whole row and keeps a second gutter on the right for the
+// axis its durations are read off.
+function plotBox(width, height, right) {
+  return {
+    width, height, left: PLOT_L, top: PLOT_T,
+    plotW: width - PLOT_L - right,
+    plotH: height - PLOT_T - PLOT_B,
+  };
+}
+const NARROW_BOX = plotBox(CHART_W, CHART_H, PLOT_R);
+const WIDE_BOX = plotBox(660, 250, 56);
+
+// A single point is a dot, not a trend: a series only counts once it has two. A log
+// axis has no place for zero, and unused space legitimately reaches it; those runs
+// are left out rather than pressed onto the bottom tick, where a 0 B run would be
+// indistinguishable from a 1 KiB one -- and the caption says how many went missing.
+function drawable(series, log) {
   const full = series.filter((s) => s.points.length > 1);
-  // A log axis has no place for zero, and unused space legitimately reaches it.
-  // Those runs are left out rather than pressed onto the bottom tick, where a 0 B
-  // run would be indistinguishable from a 1 KiB one -- and the caption says how
-  // many went missing.
   const dropped = log ? full.flatMap((s) => s.points).filter((p) => p.y <= 0).length : 0;
   const drawn = (log
     ? full
       .map((s) => ({ ...s, points: s.points.filter((p) => p.y > 0), segments: aboveZero(s.points) }))
       .filter((s) => s.points.length > 1)
     : full.map((s) => ({ ...s, segments: [s.points] })));
-  const all = drawn.flatMap((s) => s.points);
-  if (all.length < 2) {
-    // Still take a slot, so the data-chart index of every later chart is right.
-    chartModels.push({ hits: [], format: axis.format, multi: false });
-    return log
-      ? '<p class="muted">Nothing above zero to plot on a log scale.</p>'
-      : '<p class="muted">Not enough points yet.</p>';
-  }
+  return { drawn, dropped };
+}
 
-  const xs = all.map((p) => p.x);
-  const ys = all.map((p) => p.y);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const low = Math.min(...ys), high = Math.max(...ys);
+// One y axis: where a value sits in the box, which ticks to label, and how to label
+// them. Its own function because the overlay hangs two of these off one set of
+// lines, bytes on the left and seconds on the right.
+function buildScale(values, axis, log, box) {
+  const low = Math.min(...values), high = Math.max(...values);
   // A series that never moves still deserves a line, drawn down the middle --
   // but it must not be labelled with the padding invented to draw it.
   const flat = low === high;
   const unit = axis.unit(Math.max(Math.abs(low), Math.abs(high)));
-  const scale = flat || !log ? null : logTicks(low, high, axis, unit);
-  const ticks = flat ? [low] : log ? scale.ticks : niceTicks(low, high, unit);
+  const ladder = flat || !log ? null : logTicks(low, high, axis, unit);
+  const ticks = flat ? [low] : log ? ladder.ticks : niceTicks(low, high, unit);
   const y0 = flat ? (log ? low / 2 : low - 1) : ticks[0];
   const y1 = flat ? (log ? high * 2 : high + 1) : ticks[ticks.length - 1];
-  const spanX = x1 - x0 || 1;
-  const px = (x) => PLOT_L + ((x - x0) / spanX) * PLOT_W;
   // The only difference a log axis makes to the drawing: values are placed by
   // their logarithm, so a tenfold rise is the same distance wherever it starts.
   const place = log
     ? (y) => (Math.log10(y) - Math.log10(y0)) / (Math.log10(y1) - Math.log10(y0))
     : (y) => (y - y0) / (y1 - y0);
-  const py = (y) => PLOT_T + PLOT_H - place(y) * PLOT_H;
-  const label = (value) => (scale ? scale.label(value) : axis.tick(value, unit));
+  return {
+    ticks, format: axis.format,
+    py: (y) => box.top + box.plotH - place(y) * box.plotH,
+    label: (value) => (ladder ? ladder.label(value) : axis.tick(value, unit)),
+    range: flat ? `${axis.format(low)} throughout` : `${axis.format(low)} – ${axis.format(high)}`,
+  };
+}
 
-  const grid = ticks.map((value) => `
-    <line x1="${PLOT_L}" y1="${py(value).toFixed(1)}" x2="${PLOT_L + PLOT_W}" y2="${py(value).toFixed(1)}"
-          stroke="currentColor" stroke-width="0.5" opacity="${value === ticks[0] ? 0.25 : 0.12}"/>
-    <text class="tick" x="${PLOT_L - 6}" y="${(py(value) + 3.2).toFixed(1)}" text-anchor="end">${escapeHtml(label(value))}</text>`
-  ).join('');
+function timePlacer(x0, x1, box) {
+  const span = x1 - x0 || 1;
+  return (x) => box.left + ((x - x0) / span) * box.plotW;
+}
+
+// Horizontal rules, labelled down the left gutter -- or, for the overlay's second
+// axis, labelled down the right one and drawing no rules, since one grid is all a
+// chart can carry without the two sets of lines being mistaken for each other.
+function gridLines(scale, box, side) {
+  const right = side === 'right';
+  return scale.ticks.map((value) => {
+    const y = scale.py(value).toFixed(1);
+    const rule = right ? '' : `
+    <line x1="${box.left}" y1="${y}" x2="${box.left + box.plotW}" y2="${y}"
+          stroke="currentColor" stroke-width="0.5" opacity="${value === scale.ticks[0] ? 0.25 : 0.12}"/>`;
+    return `${rule}
+    <text class="tick" x="${right ? box.left + box.plotW + 6 : box.left - 6}"
+          y="${(scale.py(value) + 3.2).toFixed(1)}"
+          text-anchor="${right ? 'start' : 'end'}">${escapeHtml(scale.label(value))}</text>`;
+  }).join('');
+}
+
+// One series drawn, with its points recorded as hits so the hover handler works off
+// the drawn geometry rather than re-deriving it. A hit carries the id of the run it
+// was read from -- which is how a readout finds the same run in the other charts --
+// and its own formatter, because the overlay puts bytes and seconds on one picture.
+function plotSeries(s, px, scale, hits) {
+  const path = s.points.map((p) => {
+    const point = {
+      x: px(p.x), y: scale.py(p.y), value: p.y, time: p.x,
+      run: p.run, label: s.label, color: s.color, format: scale.format,
+    };
+    hits.push(point);
+    return point;
+  });
+  // One polyline per run of consecutive drawn points. Off a log axis that is
+  // the whole series; on one, the line stops either side of a dropped zero
+  // rather than sailing over a value that is not there.
+  const dash = s.dash ? ` stroke-dasharray="${s.dash}"` : '';
+  const strokes = s.segments
+    .filter((segment) => segment.length > 1)
+    .map((segment) => segment.map((p) => `${px(p.x).toFixed(1)},${scale.py(p.y).toFixed(1)}`).join(' '))
+    .map((points) => `<polyline fill="none" stroke="${s.color}" stroke-width="1.6"
+            stroke-linejoin="round" stroke-linecap="round"${dash} points="${points}"/>`)
+    .join('');
+  const dots = path
+    .map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="1.6" fill="${s.color}" opacity="0.5"/>`)
+    .join('');
+  const last = path[path.length - 1];
+  return `${strokes}
+          ${dots}
+          <circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="2.5" fill="${s.color}"/>`;
+}
+
+// The moving parts every chart carries: the guide the pointer drags along, the ring
+// on the point being read, and a second ring that stays on a pinned run while the
+// pointer wanders off to read something else.
+const markers = (box) => `<line class="guide" x1="0" y1="${box.top}" x2="0" y2="${box.top + box.plotH}"
+          stroke="currentColor" stroke-width="0.6" opacity="0"/>`;
+const RINGS = `<circle class="pinned" r="4.6" fill="none" stroke-width="1.2" opacity="0"/>
+    <circle class="focus" r="3.4" fill="var(--card)" stroke-width="1.8" opacity="0"/>`;
+
+function chartSvg(box, x0, x1, body, summary) {
+  return `<svg viewBox="0 0 ${box.width} ${box.height}" role="img" aria-label="${escapeHtml(summary)}">
+    ${body}
+    <text class="tick" x="${box.left}" y="${box.height - 4}">${escapeHtml(shortDate(x0))}</text>
+    ${shortDate(x0) === shortDate(x1) ? '' : `<text class="tick" x="${box.left + box.plotW}" y="${box.height - 4}" text-anchor="end">${escapeHtml(shortDate(x1))}</text>`}
+  </svg>`;
+}
+
+const nothingToPlot = (log) => (log
+  ? '<p class="muted">Nothing above zero to plot on a log scale.</p>'
+  : '<p class="muted">Not enough points yet.</p>');
+
+function lineChart(series, axis, title, log) {
+  const { drawn, dropped } = drawable(series, log);
+  const all = drawn.flatMap((s) => s.points);
+  if (all.length < 2) {
+    // Still take a slot, so the data-chart index of every later chart is right.
+    chartModels.push({ hits: [], multi: false });
+    return nothingToPlot(log);
+  }
+  const box = NARROW_BOX;
+  const xs = all.map((p) => p.x);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const px = timePlacer(x0, x1, box);
+  const scale = buildScale(all.map((p) => p.y), axis, log, box);
 
   const hits = [];
-  const lines = drawn
-    .map((s) => {
-      const path = s.points.map((p) => {
-        const point = { x: px(p.x), y: py(p.y), value: p.y, time: p.x, label: s.label, color: s.color };
-        hits.push(point);
-        return point;
-      });
-      // One polyline per run of consecutive drawn points. Off a log axis that is
-      // the whole series; on one, the line stops either side of a dropped zero
-      // rather than sailing over a value that is not there.
-      const strokes = s.segments
-        .filter((segment) => segment.length > 1)
-        .map((segment) => segment.map((p) => `${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(' '))
-        .map((points) => `<polyline fill="none" stroke="${s.color}" stroke-width="1.6"
-                stroke-linejoin="round" stroke-linecap="round" points="${points}"/>`)
-        .join('');
-      const dots = path
-        .map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="1.6" fill="${s.color}" opacity="0.5"/>`)
-        .join('');
-      const last = path[path.length - 1];
-      return `${strokes}
-              ${dots}
-              <circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="2.5" fill="${s.color}"/>`;
-    })
-    .join('');
-
-  const range = flat ? `${axis.format(low)} throughout` : `${axis.format(low)} – ${axis.format(high)}`;
+  const lines = drawn.map((s) => plotSeries(s, px, scale, hits)).join('');
   const notes = (log ? ['log scale'] : [])
     .concat(dropped ? [`${dropped} at ${axis.format(0)} not shown`] : []);
-  const caption = [range].concat(notes).join(' · ');
+  const caption = [scale.range].concat(notes).join(' · ');
   const summary = `${title}: ${caption}, ${shortDate(x0)} to ${shortDate(x1)}`
     + (drawn.length > 1 ? `, one line per ${drawn.map((s) => s.label).join(', ')}` : '');
 
-  chartModels.push({ hits, format: axis.format, multi: drawn.length > 1 });
+  chartModels.push({ hits, multi: drawn.length > 1 });
 
-  return `<svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" aria-label="${escapeHtml(summary)}">
-    ${grid}
-    <line class="guide" x1="0" y1="${PLOT_T}" x2="0" y2="${PLOT_T + PLOT_H}"
-          stroke="currentColor" stroke-width="0.6" opacity="0"/>
-    ${lines}
-    <circle class="focus" r="3.4" fill="var(--card)" stroke-width="1.8" opacity="0"/>
-    <text class="tick" x="${PLOT_L}" y="${CHART_H - 4}">${escapeHtml(shortDate(x0))}</text>
-    ${shortDate(x0) === shortDate(x1) ? '' : `<text class="tick" x="${PLOT_L + PLOT_W}" y="${CHART_H - 4}" text-anchor="end">${escapeHtml(shortDate(x1))}</text>`}
-  </svg>
-  <div class="tip" hidden aria-hidden="true"></div>
-  <div class="span">${escapeHtml(caption)}</div>`;
+  const body = gridLines(scale, box) + markers(box) + lines + RINGS;
+  return chartSvg(box, x0, x1, body, summary)
+    + '<div class="tip" hidden aria-hidden="true"></div>'
+    + `<div class="span">${escapeHtml(caption)}</div>`;
+}
+
+// -- all three at once ------------------------------------------------------
+//
+// The three charts are three readings of the same runs, so they can be laid over
+// one another -- but bytes and seconds cannot share a scale, and pretending they
+// can is how a chart lies. They do not: sizes are read off the left axis, durations
+// off the right. Colour keeps the meaning it has in the split view, one per
+// repository for the sizes and one per job for the durations, and the dash pattern
+// says which of the three readings a line is.
+const OVERLAY_DASH = { size: '', unused: '5 3', duration: '1.5 2.5' };
+
+function overlaySeries(points) {
+  const repoColor = repositoryColors(points);
+  const jobColor = (job) => cssVar('--job-' + job);
+  const tag = (metric, series) => series.map((s) => ({
+    ...s, metric, dash: OVERLAY_DASH[metric], label: `${s.label} · ${metric}`,
+  }));
+  return {
+    bytes: tag('size', seriesBy(points, 'repository', 'repo_size_after', repoColor))
+      .concat(tag('unused', seriesBy(points, 'repository', 'unused_bytes', repoColor))),
+    time: tag('duration', seriesBy(points, 'job', 'duration_seconds', jobColor)),
+  };
+}
+
+function overlayChart(points, log) {
+  const grouped = overlaySeries(points);
+  const bytesSide = drawable(grouped.bytes, log);
+  const timeSide = drawable(grouped.time, log);
+  const drawn = bytesSide.drawn.concat(timeSide.drawn);
+  const all = drawn.flatMap((s) => s.points);
+  if (all.length < 2) {
+    chartModels.push({ hits: [], multi: false });
+    return { body: nothingToPlot(log), series: [] };
+  }
+
+  const box = WIDE_BOX;
+  const xs = all.map((p) => p.x);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const px = timePlacer(x0, x1, box);
+  const scaleFor = (side, axis) => (side.drawn.length
+    ? buildScale(side.drawn.flatMap((s) => s.points).map((p) => p.y), axis, log, box)
+    : null);
+  const bytesScale = scaleFor(bytesSide, BYTES_AXIS);
+  const timeScale = scaleFor(timeSide, TIME_AXIS);
+  // With only one of the two present there is no second axis to make room for, and
+  // the grid belongs on the left where every other chart keeps it.
+  const timeAxis = bytesScale ? 'right' : 'left';
+
+  const hits = [];
+  const lines = bytesSide.drawn.map((s) => plotSeries(s, px, bytesScale, hits)).join('')
+    + timeSide.drawn.map((s) => plotSeries(s, px, timeScale, hits)).join('');
+  const grid = (bytesScale ? gridLines(bytesScale, box, 'left') : '')
+    + (timeScale ? gridLines(timeScale, box, timeAxis) : '');
+
+  // The left axis carries sizes and unused space together, so the caption names the
+  // unit rather than either of the two readings drawn against it.
+  const notes = (bytesScale ? [`bytes ${bytesScale.range} on the left`] : [])
+    .concat(timeScale ? [`durations ${timeScale.range} on the ${timeAxis}`] : [])
+    .concat(log ? ['log scale'] : [])
+    .concat(bytesSide.dropped + timeSide.dropped
+      ? [`${bytesSide.dropped + timeSide.dropped} at zero not shown`] : []);
+  const caption = notes.join(' · ');
+  const summary = `All three trends: ${caption}, ${shortDate(x0)} to ${shortDate(x1)}`;
+
+  chartModels.push({ hits, multi: true });
+
+  const body = grid + markers(box) + lines + RINGS;
+  return {
+    body: chartSvg(box, x0, x1, body, summary)
+      + '<div class="tip" hidden aria-hidden="true"></div>'
+      + `<div class="span">${escapeHtml(caption)}</div>`,
+    series: drawn,
+  };
+}
+
+// A plain square where every line in the legend looks the same, and a scrap of the
+// line itself once the dash pattern is carrying meaning of its own.
+function swatch(s) {
+  if (!s.metric) return `<i style="background:${s.color}"></i>`;
+  const dash = s.dash ? ` stroke-dasharray="${s.dash}"` : '';
+  return `<svg class="dash" viewBox="0 0 18 6" aria-hidden="true"><line x1="0" y1="3" x2="18" y2="3"
+    stroke="${s.color}" stroke-width="2"${dash}/></svg>`;
 }
 
 function legend(series) {
   const shown = series.filter((s) => s.points.length > 1);
   if (shown.length < 2) return '';
   return `<div class="legend">${shown
-    .map((s) => `<span><i style="background:${s.color}"></i>${escapeHtml(s.label)}</span>`)
+    .map((s) => `<span>${swatch(s)}${escapeHtml(s.label)}</span>`)
     .join('')}</div>`;
 }
 
@@ -1040,6 +1251,16 @@ function chart(key, title, series, axis) {
       title="Plot this chart on a logarithmic y axis">log</button>`;
   return `<div class="chart" data-chart="${index}">`
     + `<h4>${escapeHtml(title)}${toggle}</h4>${body}${legend(series)}</div>`;
+}
+
+function overlayView(points) {
+  const log = !!logScale.overlay;
+  const { body, series } = overlayChart(points, log);
+  const index = chartModels.length - 1;
+  const toggle = `<button class="scale" type="button" data-scale="overlay" aria-pressed="${log}"
+      title="Plot both axes logarithmically">log</button>`;
+  return `<div class="chart wide" data-chart="${index}">`
+    + `<h4>All three trends${toggle}</h4>${body}${legend(series)}</div>`;
 }
 
 function cssVar(name) {
@@ -1059,6 +1280,9 @@ function repositoryColors(points) {
   return (name) => colors.get(name) || cssVar('--accent');
 }
 
+// Every plotted point carries `run`, the id of the run it was read off. One run
+// contributes a point to each chart that has a number for it, which is what lets a
+// readout in one chart find its counterpart in the others.
 function seriesBy(points, key, field, colorFor) {
   const groups = new Map();
   for (const point of points) {
@@ -1066,7 +1290,7 @@ function seriesBy(points, key, field, colorFor) {
     if (value === null || value === undefined) continue;
     const name = point[key];
     if (!groups.has(name)) groups.set(name, []);
-    groups.get(name).push({ x: Date.parse(point.finished_at), y: value });
+    groups.get(name).push({ x: Date.parse(point.finished_at), y: value, run: point.id });
   }
   return [...groups.entries()].map(([name, pts]) => ({
     label: name,
@@ -1077,9 +1301,13 @@ function seriesBy(points, key, field, colorFor) {
 
 // -- reading a point off the curve ------------------------------------------
 //
-// The three jobs finish at different times, so there is no shared x to line the
-// series up on: the readout snaps to the single nearest run and names it, rather
-// than inventing a column of values that never happened at the same moment.
+// The three jobs finish at different times, so within a chart there is no shared x
+// to line the series up on: the readout snaps to the single nearest run and names
+// it, rather than inventing a column of values that never happened at the same
+// moment. Between charts the thing held in common is not a moment but the run
+// itself, so the readout carries that run's id to every other chart and each one
+// lights up its own point for it -- or none, where that run recorded no such
+// number.
 
 function chartPoint(svg, event) {
   const point = svg.createSVGPoint();
@@ -1088,6 +1316,8 @@ function chartPoint(svg, event) {
   const ctm = svg.getScreenCTM();
   return ctm ? point.matrixTransform(ctm.inverse()) : null;
 }
+
+const chartElements = () => [...document.querySelectorAll('.chart[data-chart]')];
 
 function hideChartTip(element) {
   if (!element) return;
@@ -1099,54 +1329,206 @@ function hideChartTip(element) {
   if (focus) focus.setAttribute('opacity', '0');
 }
 
-let hoveredChart = null;
+function hideAllChartTips() {
+  chartElements().forEach(hideChartTip);
+}
 
-function onChartHover(event) {
-  const element = event.target.closest('.chart[data-chart]');
-  if (element !== hoveredChart) hideChartTip(hoveredChart);
-  hoveredChart = element;
-  if (!element) return;
-
+// The run nearest the pointer in one chart, or null when the pointer is not close
+// enough to any of them to be pointing at one.
+function nearestHit(element, event) {
   const svg = element.querySelector('svg');
   const model = chartModels[Number(element.dataset.chart)];
-  if (!svg || !model || !model.hits.length) return;
+  if (!svg || !model || !model.hits.length) return null;
   const cursor = chartPoint(svg, event);
-  if (!cursor) return;
-
+  if (!cursor) return null;
   let nearest = null, best = Infinity;
   for (const hit of model.hits) {
     const distance = Math.hypot(hit.x - cursor.x, (hit.y - cursor.y) * 0.6);
     if (distance < best) { best = distance; nearest = hit; }
   }
-  if (!nearest || best > HOVER_RADIUS) { hideChartTip(element); return; }
+  return nearest && best <= HOVER_RADIUS ? nearest : null;
+}
+
+// One chart's guide, ring and tip put on one hit. `linked` marks the charts that are
+// only echoing a run read off a neighbour, so the one under the pointer still reads
+// as the one being asked.
+function paintChartReadout(element, hit, linked) {
+  const model = chartModels[Number(element.dataset.chart)];
+  const svg = element.querySelector('svg');
+  if (!svg || !model) return;
 
   const guide = element.querySelector('.guide');
-  guide.setAttribute('x1', nearest.x.toFixed(1));
-  guide.setAttribute('x2', nearest.x.toFixed(1));
-  guide.setAttribute('opacity', '0.3');
+  guide.setAttribute('x1', hit.x.toFixed(1));
+  guide.setAttribute('x2', hit.x.toFixed(1));
+  guide.setAttribute('opacity', linked ? '0.16' : '0.3');
   const focus = element.querySelector('.focus');
-  focus.setAttribute('cx', nearest.x.toFixed(1));
-  focus.setAttribute('cy', nearest.y.toFixed(1));
-  focus.setAttribute('stroke', nearest.color);
-  focus.setAttribute('opacity', '1');
+  focus.setAttribute('cx', hit.x.toFixed(1));
+  focus.setAttribute('cy', hit.y.toFixed(1));
+  focus.setAttribute('stroke', hit.color);
+  focus.setAttribute('opacity', linked ? '0.65' : '1');
 
   const tip = element.querySelector('.tip');
-  tip.innerHTML = `<strong>${escapeHtml(model.format(nearest.value))}</strong>`
-    + (model.multi ? `<span class="who">${escapeHtml(nearest.label)}</span>` : '')
-    + `<span class="who">${escapeHtml(new Date(nearest.time).toLocaleString())}</span>`;
+  tip.classList.toggle('linked', linked);
+  tip.innerHTML = `<strong>${escapeHtml(hit.format(hit.value))}</strong>`
+    + (model.multi ? `<span class="who">${escapeHtml(hit.label)}</span>` : '')
+    + `<span class="who">${escapeHtml(new Date(hit.time).toLocaleString())}</span>`;
   tip.hidden = false;
 
   // The svg scales uniformly and fills the card's width, so one viewBox unit is
   // the same number of pixels in both directions.
   const box = element.getBoundingClientRect();
   const rect = svg.getBoundingClientRect();
-  const scale = rect.width / CHART_W;
-  const left = rect.left - box.left + nearest.x * scale;
-  const top = rect.top - box.top + nearest.y * scale;
+  const scale = rect.width / svg.viewBox.baseVal.width;
+  const left = rect.left - box.left + hit.x * scale;
+  const top = rect.top - box.top + hit.y * scale;
   tip.style.left = Math.max(2, Math.min(left - tip.offsetWidth / 2, box.width - tip.offsetWidth - 2)) + 'px';
   const above = top - tip.offsetHeight - 10 >= 0;
   tip.classList.toggle('below', !above);
   tip.style.top = (above ? top - 10 : top + 10) + 'px';
+}
+
+// One run read out across every chart at once. `source` is the chart the pointer is
+// in, if any, and `sourceHit` the point it actually snapped to -- in the overlay one
+// run has up to three points in the same chart, and the one under the pointer is the
+// one that was asked for. A chart with no point for this run says nothing rather
+// than showing a neighbouring run instead.
+function showRun(runId, source, sourceHit) {
+  for (const element of chartElements()) {
+    const model = chartModels[Number(element.dataset.chart)];
+    const hit = (element === source && sourceHit)
+      || (model && model.hits.find((h) => h.run === runId));
+    if (!hit) { hideChartTip(element); continue; }
+    paintChartReadout(element, hit, element !== source);
+  }
+  showReadout(runId);
+}
+
+function onChartHover(event) {
+  const element = event.target.closest('.chart[data-chart]');
+  if (!element) return;
+  const hit = nearestHit(element, event);
+  if (!hit) {
+    // Off the lines but still inside the card: fall back to whatever is pinned,
+    // rather than leaving a readout for a point the pointer has left behind.
+    if (pinnedTrendRun) showRun(pinnedTrendRun, null, null);
+    else { chartElements().forEach(hideChartTip); hideReadout(); }
+    return;
+  }
+  showRun(hit.run, element, hit);
+}
+
+function onChartLeave() {
+  chartElements().forEach(hideChartTip);
+  if (pinnedTrendRun) showRun(pinnedTrendRun, null, null);
+  else hideReadout();
+}
+
+// -- the run behind the point -----------------------------------------------
+//
+// A point on a chart is a number with no story: which job put it there, on whose
+// schedule, and what it freed. That story is exactly a history row, so the trends
+// card renders one -- built by the same function the history table uses, so the two
+// can never come to disagree. A pin keeps a run there while the pointer goes off to
+// compare it against another.
+
+let pinnedTrendRun = null;
+let shownTrendRun = null;
+//: Full run records already fetched, by id. A charted run has finished, so its
+//: record will never change again and one fetch per run is all this ever costs.
+const runCache = new Map();
+let runFetchTimer = null;
+
+//: What the chart point alone knows, in the shape a history row expects. Every
+//: charted run succeeded and finished, and a run that finished started its own
+//: duration earlier; only the trigger and the job's detail have to be fetched, and
+//: they fill in a moment later rather than holding the row back.
+function partialRun(point) {
+  const finished = Date.parse(point.finished_at);
+  const started = Number.isFinite(finished)
+    ? new Date(finished - (point.duration_seconds || 0) * 1000).toISOString()
+    : null;
+  const metrics = {};
+  if (point.repo_size_after !== null && point.repo_size_after !== undefined) {
+    metrics.repo_size_after = point.repo_size_after;
+  }
+  return {
+    id: point.id, job: point.job, repository: point.repository, status: 'success',
+    dry_run: false, started_at: started, duration_seconds: point.duration_seconds,
+    trigger: '…', metrics,
+  };
+}
+
+function showReadout(runId) {
+  const cached = runCache.get(runId);
+  const point = cached ? null : trendPoints.find((p) => p.id === runId);
+  if (!cached && !point) { hideReadout(); return; }
+  shownTrendRun = runId;
+  const pinned = pinnedTrendRun === runId;
+  const element = $('trend-readout');
+  $('readout-what').textContent = pinned ? 'Pinned run' : 'The run under the pointer';
+  $('unpin').hidden = !pinned;
+  element.classList.toggle('pinned', pinned);
+  $('readout-row').innerHTML = `<tr>${historyCells(cached || partialRun(point))}</tr>`;
+  element.hidden = false;
+  paintRelativeTimes();
+  if (!cached) queueRunFetch(runId);
+}
+
+function hideReadout() {
+  shownTrendRun = null;
+  $('trend-readout').hidden = true;
+}
+
+function queueRunFetch(runId) {
+  clearTimeout(runFetchTimer);
+  runFetchTimer = setTimeout(async () => {
+    let run;
+    try { run = await request(`runs/${runId}`); } catch (error) { return; }
+    runCache.set(runId, run);
+    // The pointer may have moved on while this was in flight; the run it moved to
+    // is the one that should be painted.
+    if (shownTrendRun === runId) showReadout(runId);
+  }, 120);
+}
+
+// The ring that stays on a pinned run while the pointer reads something else. Also
+// what clears them, since an unpinned run pins nothing anywhere.
+function markPinned() {
+  for (const element of chartElements()) {
+    const model = chartModels[Number(element.dataset.chart)];
+    const ring = element.querySelector('.pinned');
+    if (!ring) continue;
+    const hit = pinnedTrendRun && model && model.hits.find((h) => h.run === pinnedTrendRun);
+    if (!hit) { ring.setAttribute('opacity', '0'); continue; }
+    ring.setAttribute('cx', hit.x.toFixed(1));
+    ring.setAttribute('cy', hit.y.toFixed(1));
+    ring.setAttribute('stroke', hit.color);
+    ring.setAttribute('opacity', '1');
+  }
+}
+
+function pinTrendRun(runId) {
+  pinnedTrendRun = runId;
+  markPinned();
+  showRun(runId, null, null);
+}
+
+function unpinTrendRun() {
+  pinnedTrendRun = null;
+  markPinned();
+  chartElements().forEach(hideChartTip);
+  hideReadout();
+}
+
+//: renderTrends rebuilds every chart from scratch whenever the history moves, which
+//: on a page that polls is every few seconds. The pin has to be put back afterwards
+//: or it would quietly disappear -- and dropped for good once its run has aged out
+//: of the charted window.
+function paintPinnedRun() {
+  if (!pinnedTrendRun) return;
+  if (!trendPoints.some((p) => p.id === pinnedTrendRun)) { unpinTrendRun(); return; }
+  markPinned();
+  showRun(pinnedTrendRun, null, null);
 }
 
 //: Which charts are drawn on a log axis, one flag each. Remembered across reloads:
@@ -1168,6 +1550,19 @@ function writeLogScale() {
   try { localStorage.setItem(SCALE_KEY, JSON.stringify(logScale)); } catch (error) {}
 }
 
+//: Whether the three trends are laid over one another. Remembered for the same
+//: reason the log flags are: it is a way of reading the card, not a passing look.
+const VIEW_KEY = 'restic-pruner.overlay';
+let overlaid = readOverlay();
+
+function readOverlay() {
+  try { return localStorage.getItem(VIEW_KEY) === '1'; } catch (error) { return false; }
+}
+
+function writeOverlay() {
+  try { localStorage.setItem(VIEW_KEY, overlaid ? '1' : '0'); } catch (error) {}
+}
+
 //: The last points fetched, so flipping a scale repaints without a round trip.
 let trendPoints = [];
 
@@ -1180,19 +1575,25 @@ async function refreshTrends() {
 
 function renderTrends() {
   const el = $('charts');
-  hideChartTip(hoveredChart);
-  hoveredChart = null;
+  hideAllChartTips();
   chartModels.length = 0;
+  $('view-overlay').setAttribute('aria-pressed', String(overlaid));
   if (trendPoints.length < 2) {
     el.innerHTML = '<p class="muted">Not enough finished runs yet.</p>';
+    hideReadout();
     return;
   }
-  const repoColor = repositoryColors(trendPoints);
-  const jobColor = (job) => cssVar('--job-' + job);
-  el.innerHTML =
-    chart('size', 'Repository size', seriesBy(trendPoints, 'repository', 'repo_size_after', repoColor), BYTES_AXIS) +
-    chart('unused', 'Unused space', seriesBy(trendPoints, 'repository', 'unused_bytes', repoColor), BYTES_AXIS) +
-    chart('duration', 'Run duration', seriesBy(trendPoints, 'job', 'duration_seconds', jobColor), TIME_AXIS);
+  if (overlaid) {
+    el.innerHTML = overlayView(trendPoints);
+  } else {
+    const repoColor = repositoryColors(trendPoints);
+    const jobColor = (job) => cssVar('--job-' + job);
+    el.innerHTML =
+      chart('size', 'Repository size', seriesBy(trendPoints, 'repository', 'repo_size_after', repoColor), BYTES_AXIS) +
+      chart('unused', 'Unused space', seriesBy(trendPoints, 'repository', 'unused_bytes', repoColor), BYTES_AXIS) +
+      chart('duration', 'Run duration', seriesBy(trendPoints, 'job', 'duration_seconds', jobColor), TIME_AXIS);
+  }
+  paintPinnedRun();
 }
 
 // What each sortable column sorts on. A run with nothing to compare -- an
@@ -1272,6 +1673,22 @@ function historyDetail(run) {
   return '';
 }
 
+//: The eight cells of a history row. The trends card renders one of these too, for
+//: the run being read off the charts, so they are built in one place and cannot come
+//: to say different things about the same run.
+function historyCells(run) {
+  const text = historyDetail(run);
+  const detail = run.error ? `<span class="muted">${escapeHtml(text)}</span>` : escapeHtml(text);
+  return `<td>${jobTag(run.job)}${run.dry_run ? ' <span class="muted">(dry)</span>' : ''}</td>
+      <td>${escapeHtml(run.repository)}</td>
+      <td>${pill(run.status)}</td>
+      <td>${when(run.started_at)}</td>
+      <td>${duration(run.duration_seconds)}</td>
+      <td>${run.metrics.repo_size_after === undefined ? '–' : bytes(run.metrics.repo_size_after)}</td>
+      <td class="muted">${escapeHtml(run.trigger)}</td>
+      <td>${detail}</td>`;
+}
+
 //: The ISO week a run started in, as a comparable key. Weeks begin on Monday, so
 //: a Sunday cluster falls wholly inside one of them, and the year comes from the
 //: week's Thursday, which is what makes the turn of the year unambiguous.
@@ -1305,20 +1722,8 @@ function renderHistory() {
     const week = isoWeekKey(run.started_at);
     if (previousWeek !== null && week !== previousWeek) band = !band;
     previousWeek = week;
-    const text = historyDetail(run);
-    const detail = run.error
-      ? `<span class="muted">${escapeHtml(text)}</span>`
-      : escapeHtml(text);
-    return `<tr${banded && band ? ' class="week-band"' : ''} data-run-id="${run.id}">
-      <td>${jobTag(run.job)}${run.dry_run ? ' <span class="muted">(dry)</span>' : ''}</td>
-      <td>${escapeHtml(run.repository)}</td>
-      <td>${pill(run.status)}</td>
-      <td>${when(run.started_at)}</td>
-      <td>${duration(run.duration_seconds)}</td>
-      <td>${run.metrics.repo_size_after === undefined ? '–' : bytes(run.metrics.repo_size_after)}</td>
-      <td class="muted">${run.trigger}</td>
-      <td>${detail}</td>
-    </tr>`;
+    return `<tr${banded && band ? ' class="week-band"' : ''} data-run-id="${run.id}">`
+      + historyCells(run) + '</tr>';
   }).join('');
   paintRelativeTimes();
 }
@@ -1399,6 +1804,9 @@ document.addEventListener('click', async (event) => {
   if (row) {
     const runId = row.dataset.runId;
     pinnedRunId = runId;
+    // The same run, marked on the charts and spelled out under them -- when it is
+    // one of the runs the charts drew. A failed or unfinished run is on no line.
+    if (trendPoints.some((point) => point.id === runId)) pinTrendRun(runId);
     $('log-title').textContent = 'Log – ' + runId.slice(0, 8);
     try {
       $('log').textContent = await request(`runs/${runId}/log`);
@@ -1416,15 +1824,37 @@ document.addEventListener('click', async (event) => {
 // and per-chart listeners would not survive it.
 $('charts').addEventListener('click', (event) => {
   const button = event.target.closest('button.scale');
-  if (!button) return;
-  const key = button.dataset.scale;
-  logScale[key] = !logScale[key];
-  writeLogScale();
-  renderTrends();
+  if (button) {
+    const key = button.dataset.scale;
+    logScale[key] = !logScale[key];
+    writeLogScale();
+    renderTrends();
+    return;
+  }
+  // A click on the drawing pins whatever the pointer was already reading, so the
+  // row below stays put while the eye goes back to the lines. Clicking it again
+  // lets go.
+  const element = event.target.closest('.chart[data-chart]');
+  if (!element) return;
+  const hit = nearestHit(element, event);
+  if (!hit) return;
+  if (pinnedTrendRun === hit.run) unpinTrendRun();
+  else pinTrendRun(hit.run);
 });
 $('charts').addEventListener('pointermove', onChartHover);
-$('charts').addEventListener('pointerleave', () => { hideChartTip(hoveredChart); hoveredChart = null; });
-$('charts').addEventListener('pointercancel', () => { hideChartTip(hoveredChart); hoveredChart = null; });
+$('charts').addEventListener('pointerleave', onChartLeave);
+$('charts').addEventListener('pointercancel', onChartLeave);
+
+$('view-overlay').addEventListener('click', () => {
+  overlaid = !overlaid;
+  writeOverlay();
+  renderTrends();
+});
+
+$('unpin').addEventListener('click', unpinTrendRun);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && pinnedTrendRun) unpinTrendRun();
+});
 
 $('history-job').addEventListener('change', (event) => {
   historyJob = event.target.value;
