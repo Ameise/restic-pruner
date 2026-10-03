@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1
+
+### The trends run up to today
+
+The trend charts used to end at the latest run, so a schedule that had quietly stopped
+firing looked exactly like one that ran a minute ago. **The time axis now runs up to
+today**: a stretch with no runs shows as an empty gap at the right of every chart, and
+the date under the right edge is today's.
+
 ## 0.5.0
 
 ### The dashboard stopped shoving things aside

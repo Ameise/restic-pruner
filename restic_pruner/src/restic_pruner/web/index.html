@@ -7,7 +7,7 @@
 <!-- The version this page was built from. Compared at runtime against what the
      add-on reports, so a page served from a stale cache can notice and say so.
      Kept in step with the other version strings by scripts/check_versions.py. -->
-<meta name="build-version" content="0.5.0">
+<meta name="build-version" content="0.5.1">
 <style>
   :root {
     color-scheme: light dark;
@@ -1048,6 +1048,14 @@ function buildScale(values, axis, log, box) {
   };
 }
 
+// The time axis runs up to now, not to the latest run: a schedule that has quietly
+// stopped firing should show as an empty stretch at the right of every chart,
+// rather than the last run being drawn at the edge as though it had just happened.
+function timeSpan(points) {
+  const xs = points.map((p) => p.x);
+  return [Math.min(...xs), Math.max(Date.now(), ...xs)];
+}
+
 function timePlacer(x0, x1, box) {
   const span = x1 - x0 || 1;
   return (x) => box.left + ((x - x0) / span) * box.plotW;
@@ -1131,8 +1139,7 @@ function lineChart(series, axis, title, log) {
     return nothingToPlot(log);
   }
   const box = NARROW_BOX;
-  const xs = all.map((p) => p.x);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const [x0, x1] = timeSpan(all);
   const px = timePlacer(x0, x1, box);
   const scale = buildScale(all.map((p) => p.y), axis, log, box);
 
@@ -1187,8 +1194,7 @@ function overlayChart(points, log) {
   }
 
   const box = WIDE_BOX;
-  const xs = all.map((p) => p.x);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const [x0, x1] = timeSpan(all);
   const px = timePlacer(x0, x1, box);
   const scaleFor = (side, axis) => (side.drawn.length
     ? buildScale(side.drawn.flatMap((s) => s.points).map((p) => p.y), axis, log, box)

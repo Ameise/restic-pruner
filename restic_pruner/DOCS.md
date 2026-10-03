@@ -450,7 +450,8 @@ retained history, under **Trends**. Duration is drawn one line per job, in the s
 colours the history table tags them with; where you run several repositories, each gets
 its own colour in the size charts. Each chart has a labelled axis, and pointing at the
 curve reads out the nearest run: its exact value, which job or repository it belongs to,
-and when it finished.
+and when it finished. The time axis runs up to today rather than to the latest run, so
+if runs have stopped for a while, that shows as an empty stretch at the right.
 
 The three charts are three readings of the same runs, so pointing at a point in one
 **labels the same run in the other two**. A run that recorded no such number -- a check
