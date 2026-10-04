@@ -1,5 +1,7 @@
 # Restic Pruner
 
+![Restic Pruner's web UI in the Home Assistant sidebar, maintaining three repositories](docs/screenshot.png)
+
 A Home Assistant add-on that runs `restic forget --prune` and `restic check` on a
 schedule, across one or many repositories, reports every run to
 [healthchecks.io](https://healthchecks.io), and exposes the results as Home Assistant
